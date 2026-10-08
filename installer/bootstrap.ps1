@@ -26,6 +26,10 @@ $Tools = Join-Path $Root "tools"
 $Venv  = Join-Path $Root ".venv"
 $Py    = Join-Path $Venv "Scripts\python.exe"
 New-Item -ItemType Directory -Force -Path $Tools | Out-Null
+# Work from the install folder and hand tools RELATIVE paths: some Windows setups split
+# arguments at spaces (e.g. C:\Users\Designer 1\...), which broke "uv pip install -r".
+Set-Location -LiteralPath $Root
+$RelPy = ".venv\Scripts\python.exe"
 Start-Transcript -Path (Join-Path $Root "install.log") -Append | Out-Null
 
 function Say($msg)  { Write-Host ""; Write-Host "==> $msg" -ForegroundColor Cyan }
@@ -52,6 +56,7 @@ function Expand-Zip([string]$Zip, [string]$Dest) {
 
 Write-Host "OnDaGo Editor installer" -ForegroundColor Magenta
 Write-Host "Install folder: $Root"
+if ($Root -match '\s') { Warn "Install path contains a space. If anything fails, move this folder to e.g. C:\OnDaGo and re-run." }
 if ($Root.Length -gt 60) { Warn "Install path is long. If you see path errors, move this folder to e.g. C:\OnDaGo and re-run." }
 
 # ------------------------------------------------------------------ checks
@@ -113,7 +118,7 @@ $env:UV_CACHE_DIR = Join-Path $Tools "uv-cache"
 $env:UV_LINK_MODE = "copy"
 $env:UV_HTTP_TIMEOUT = "300"
 if (-not (Test-Path $Py)) {
-    & $Uv venv $Venv --python 3.11 --seed
+    & $Uv venv .venv --python 3.11 --seed
     if ($LASTEXITCODE -ne 0) { throw "Could not create Python environment." }
 }
 Ok "Python environment: $Venv"
@@ -123,19 +128,19 @@ Say "PyTorch ($cuTag) - large download, please wait"
 $torchIdx = "https://download.pytorch.org/whl/$cuTag"
 $ok = $false
 for ($i = 1; $i -le 3; $i++) {
-    & $Uv pip install --python $Py torch torchvision --index-url $torchIdx --reinstall-package torch --reinstall-package torchvision
+    & $Uv pip install --python $RelPy torch torchvision --index-url $torchIdx --reinstall-package torch --reinstall-package torchvision
     if ($LASTEXITCODE -eq 0) { $ok = $true; break }
     Warn "PyTorch download interrupted (attempt $i of 3), retrying..."
     Start-Sleep -Seconds 5
 }
 if (-not $ok) { throw "PyTorch install failed (network). Re-run install.bat to continue." }
 $tv = (& $Py -c "import torch,torchvision;print(torch.__version__);print(torchvision.__version__)")
-$constraints = Join-Path $Tools "constraints.txt"
+$constraints = "tools\constraints.txt"
 Set-Content -Path $constraints -Value @("torch==$($tv[0])", "torchvision==$($tv[1])") -Encoding ascii
 Ok "torch $($tv[0])"
 
 Say "App libraries"
-& $Uv pip install --python $Py -r (Join-Path $Root "requirements.txt") -c $constraints --extra-index-url $torchIdx --index-strategy unsafe-best-match
+& $Uv pip install --python $RelPy -r requirements.txt -c $constraints --extra-index-url $torchIdx --index-strategy unsafe-best-match
 if ($LASTEXITCODE -ne 0) { throw "Library install failed." }
 Ok "libraries installed"
 
@@ -173,7 +178,7 @@ Ok "ollama ready"
 # ------------------------------------------------------------------ models
 Say "Downloading AI models (Whisper, Qwen 3.5, SigLIP, BiRefNet$(if (-not $Lite) {', FLUX.2 klein'}))"
 $env:HF_HUB_DISABLE_SYMLINKS_WARNING = "1"
-$args2 = @((Join-Path $Root "installer\setup_models.py"), "--llm", $Llm)
+$args2 = @("installer\setup_models.py", "--llm", $Llm)
 if ($Lite) { $args2 += "--lite" }
 & $Py @args2
 if ($LASTEXITCODE -ne 0) { throw "Model setup reported a critical failure (see above)." }
