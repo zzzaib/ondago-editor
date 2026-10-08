@@ -1,0 +1,18 @@
+# created by the installer / at runtime - never commit
+tools/
+models/
+data/
+.venv/
+install.log
+__pycache__/
+*.pyc
+*.part
+*.tmp
+# local test media & secrets
+*.mp4
+*.mov
+*.MOV
+*.mkv
+client_secret*.json
+youtube_token.json
+.env

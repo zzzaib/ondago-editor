@@ -1,0 +1,19 @@
+# torch / torchvision are installed first by installer/bootstrap.ps1 from the CUDA index.
+faster-whisper>=1.1.1
+transformers>=4.56,<6
+diffusers>=0.37
+accelerate>=1.0
+bitsandbytes>=0.45
+sentencepiece
+protobuf
+safetensors
+huggingface_hub>=0.30
+opencv-python-headless>=4.10,<5
+numpy
+pillow>=10
+rembg[cpu]>=2.0.60
+PySide6>=6.7
+requests
+google-api-python-client>=2.100
+google-auth-oauthlib>=1.2
+google-auth-httplib2
