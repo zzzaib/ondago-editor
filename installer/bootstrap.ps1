@@ -163,14 +163,31 @@ Ok "libraries installed"
 # ------------------------------------------------------------------ ffmpeg
 Say "FFmpeg (GPU encoding for NVIDIA / AMD / Intel + libass)"
 $FfBin = Join-Path $Tools "ffmpeg\bin"
-if (-not (Test-Path (Join-Path $FfBin "ffmpeg.exe"))) {
-    $zip = Join-Path $Tools "ffmpeg.zip"
-    try {
-        Get-File "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" $zip
-    } catch {
-        Warn "BtbN mirror failed, trying gyan.dev"
-        Get-File "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" $zip
+$FfExe = Join-Path $FfBin "ffmpeg.exe"
+# The newest FFmpeg "master" builds need a brand-new NVIDIA driver for NVENC ("Required: 13.1 Found: 13.0").
+# We pin a release build instead; an older install that hits that error is replaced automatically.
+if ((Test-Path $FfExe) -and $smi) {
+    $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    $test = ""
+    try { $test = (& $FfExe -hide_banner -loglevel error -f lavfi -i "color=c=black:s=640x360:r=30:d=0.5" -c:v h264_nvenc -f null - 2>&1 | ForEach-Object { "$_" }) -join " " } catch { $test = "$_" }
+    $ErrorActionPreference = $prevEap
+    if ($test -match "required nvenc API version") {
+        Warn "Your FFmpeg is too new for your NVIDIA driver (GPU encoding off). Switching to the stable FFmpeg build."
+        $old = Join-Path $Tools "ffmpeg-old"
+        if (Test-Path $old) { Remove-Item $old -Recurse -Force }
+        Move-Item (Join-Path $Tools "ffmpeg") $old
     }
+}
+if (-not (Test-Path $FfExe)) {
+    $zip = Join-Path $Tools "ffmpeg.zip"
+    $urls = @("https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-gpl-8.1.zip",
+              "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full.zip",
+              "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip")
+    $got = $false
+    foreach ($u in $urls) {
+        try { Get-File $u $zip; $got = $true; break } catch { Warn "FFmpeg download failed from $u, trying the next mirror" }
+    }
+    if (-not $got) { throw "Could not download FFmpeg. Check your internet connection and re-run install.bat." }
     $tmp = Join-Path $Tools "ffmpeg-tmp"
     Expand-Zip $zip $tmp
     $exe = Get-ChildItem -Recurse -Path $tmp -Filter ffmpeg.exe | Select-Object -First 1
