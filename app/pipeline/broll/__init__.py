@@ -73,8 +73,9 @@ class BrollResolver:
         use_lib = self.mode in ("offline", "both") and self.cfg.get("broll_library") and \
             Path(self.cfg["broll_library"]).exists()
         use_online = self.mode in ("online", "both") and online.available(self.cfg)
-        if self.mode in ("online", "both") and not online.available(self.cfg):
-            self.log("Online B-roll enabled but no Pexels/Pixabay key in Settings.")
+        if self.mode in ("online", "both") and not online.has_video_keys(self.cfg):
+            self.log("No Pexels/Pixabay key yet - using free openly-licensed photos. Add a free Pexels key in "
+                     "Settings for real video clips.")
 
         # 1) local library (GPU: SigLIP, small)
         if use_lib:
@@ -115,10 +116,10 @@ class BrollResolver:
             if best:
                 self._apply(s, best)
             else:
-                act = self.cfg.get("broll_missing_action", "ask")
-                if act == "ai" and generate.available()[0]:
+                act = self.cfg.get("broll_missing_action", "auto")
+                if act in ("ai", "auto") and generate.available()[0]:
                     need_ai.append(s)
-                elif act == "card":
+                elif act in ("card", "auto"):  # decide for me: animated keyword card, never stop and ask
                     make_card(s)
                 elif act == "skip":
                     s["status"] = "skipped"
@@ -133,7 +134,7 @@ class BrollResolver:
 
         # download chosen online clips
         for s in todo:
-            if s["status"] == "resolved" and s["source"] in ("pexels", "pixabay") and not s.get("file"):
+            if s["status"] == "resolved" and s["source"] in ("pexels", "pixabay", "openverse") and not s.get("file"):
                 try:
                     s["file"] = online.download_video(s["_chosen"])
                 except Exception as e:  # noqa: BLE001
@@ -194,7 +195,7 @@ class BrollResolver:
         s.update({"status": "resolved", "source": c["source"], "kind": c["kind"], "preview": c.get("preview", ""),
                   "file_start": c.get("file_start", 0.0), "score": c.get("vlm", c.get("score", 0)),
                   "file": c.get("file", ""), "credit": c.get("author", ""), "page": c.get("page", "")})
-        if c["source"] in ("pexels", "pixabay"):
+        if c["source"] in ("pexels", "pixabay", "openverse"):
             s["file"] = ""
             s["_chosen"] = c
 

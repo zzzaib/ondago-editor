@@ -18,6 +18,14 @@ from ..pipeline.broll import make_card, set_user_file
 from ..pipeline.planner import fmt_time
 from .workers import Task
 
+DOODLE_LABELS = [("idea", "Idea (lightbulb)"), ("question", "Question marks"), ("warning", "Warning (!!)"),
+                 ("emphasis", "Emphasis lines"), ("love", "Hearts"), ("best", "Crown"), ("amazing", "Stars"),
+                 ("magic", "Sparkles"), ("point_me", "Arrow at me"), ("yes", "Tick"), ("no", "Cross"),
+                 ("money", "Money"), ("growth", "Graph up"), ("fast", "Rocket"), ("energy", "Lightning"),
+                 ("time", "Clock"), ("hot", "Fire"), ("goal", "Target"), ("look", "Eyes"), ("confused", "Spiral"),
+                 ("happy", "Smiley"), ("music", "Music notes"), ("search", "Magnifier"), ("win", "Trophy"),
+                 ("wow", "WOW burst")]
+
 try:
     from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
     from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -231,8 +239,10 @@ class ReviewTab(QWidget):
         self.job: Job | None = None
         self.task: Task | None = None
         root = QVBoxLayout(self)
+        root.setContentsMargins(24, 20, 24, 16)
+        root.setSpacing(10)
         top = QHBoxLayout()
-        self.title = QLabel("Open a project from Create")
+        self.title = QLabel("Open a project from Projects")
         self.title.setObjectName("h1")
         top.addWidget(self.title, 1)
         self.b_render = QPushButton("Render")
@@ -311,6 +321,38 @@ class ReviewTab(QWidget):
         tl.addLayout(kf)
         self.tabs.addTab(tw, "Text")
 
+        # --- Doodles
+        dw = QWidget()
+        dl = QVBoxLayout(dw)
+        hint = QLabel("Hand-drawn doodles pop up next to you. Change the type or untick to remove, then re-render.")
+        hint.setObjectName("muted")
+        dl.addWidget(hint)
+        self.dood = QTableWidget(0, 4)
+        self.dood.setHorizontalHeaderLabels(["Show", "Time", "Doodle", "Moment"])
+        self.dood.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.dood.itemChanged.connect(self._dood_changed)
+        self.dood.cellDoubleClicked.connect(lambda r, c: self.player.seek_source(self.job.plan["doodles"][r]["s"]))
+        dl.addWidget(self.dood, 3)
+        adr = QHBoxLayout()
+        self.new_kind = QComboBox()
+        for k, label in DOODLE_LABELS:
+            self.new_kind.addItem(label, k)
+        ad = QPushButton("+ Add this doodle at the current preview time (Raw video)")
+        ad.clicked.connect(self.add_doodle)
+        adr.addWidget(self.new_kind)
+        adr.addWidget(ad, 1)
+        dl.addLayout(adr)
+        ol = QLabel("Glowing outline around you")
+        ol.setObjectName("muted")
+        dl.addWidget(ol)
+        self.outl = QTableWidget(0, 2)
+        self.outl.setHorizontalHeaderLabels(["Show", "Time"])
+        self.outl.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.outl.itemChanged.connect(self._outline_changed)
+        self.outl.setMaximumHeight(150)
+        dl.addWidget(self.outl, 1)
+        self.tabs.addTab(dw, "Doodles")
+
         # --- Thumbnail
         thw = QWidget()
         thl = QVBoxLayout(thw)
@@ -371,6 +413,7 @@ class ReviewTab(QWidget):
         self.refresh_broll()
         self.refresh_cuts()
         self.refresh_text()
+        self.refresh_doodles()
         self.refresh_thumbs()
         self.refresh_publish()
         self.b_yt.setEnabled(bool(outs.get("youtube")))
@@ -432,6 +475,82 @@ class ReviewTab(QWidget):
             self.callouts.setItem(r, 2, QTableWidgetItem(c["text"]))
         self.callouts.blockSignals(False)
         self.keywords.setText(", ".join(self.job.plan.get("keywords", [])))
+
+    def refresh_doodles(self):
+        self.dood.blockSignals(True)
+        ds = self.job.plan.get("doodles", [])
+        self.dood.setRowCount(len(ds))
+        for r, d in enumerate(ds):
+            it = QTableWidgetItem()
+            it.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            it.setCheckState(Qt.Checked if d.get("enabled", True) else Qt.Unchecked)
+            self.dood.setItem(r, 0, it)
+            t = QTableWidgetItem(fmt_time(d["s"]))
+            t.setFlags(Qt.ItemIsEnabled)
+            self.dood.setItem(r, 1, t)
+            if d.get("shape") == "custom":
+                x = QTableWidgetItem(f"AI: {d.get('prompt', '')}")
+                x.setFlags(Qt.ItemIsEnabled)
+                self.dood.setItem(r, 2, x)
+            else:
+                cb = QComboBox()
+                for k, label in DOODLE_LABELS:
+                    cb.addItem(label, k)
+                cb.setCurrentIndex(max(0, cb.findData(d.get("kind"))))
+                cb.currentIndexChanged.connect(lambda _=0, d=d, cb=cb: self._dood_kind(d, cb.currentData()))
+                self.dood.setCellWidget(r, 2, cb)
+            m = QTableWidgetItem(d.get("line", ""))
+            m.setFlags(Qt.ItemIsEnabled)
+            self.dood.setItem(r, 3, m)
+        self.dood.blockSignals(False)
+        self.outl.blockSignals(True)
+        ol = self.job.plan.get("outlines", [])
+        self.outl.setRowCount(len(ol))
+        for r, o in enumerate(ol):
+            it = QTableWidgetItem()
+            it.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            it.setCheckState(Qt.Checked if o.get("enabled", True) else Qt.Unchecked)
+            self.outl.setItem(r, 0, it)
+            t = QTableWidgetItem(fmt_time(o["s"]))
+            t.setFlags(Qt.ItemIsEnabled)
+            self.outl.setItem(r, 1, t)
+        self.outl.blockSignals(False)
+        n = sum(1 for d in ds if d.get("enabled", True))
+        self.tabs.setTabText(self.tabs.indexOf(self.dood.parentWidget()), f"Doodles ({n})" if ds else "Doodles")
+
+    def _dood_changed(self, it: QTableWidgetItem):
+        if it.column() == 0:
+            self.job.plan["doodles"][it.row()]["enabled"] = it.checkState() == Qt.Checked
+            self.job.save()
+
+    def _outline_changed(self, it: QTableWidgetItem):
+        if it.column() == 0:
+            self.job.plan["outlines"][it.row()]["enabled"] = it.checkState() == Qt.Checked
+            self.job.save()
+
+    def _dood_kind(self, d: dict, kind: str):
+        from ..pipeline import doodle_shapes as ds
+        shape, where, color, sound = ds.KINDS[kind]
+        if shape == "money" and self.job.plan.get("caption_script") == "hinglish":
+            shape = "rupee"
+        d.update({"kind": kind, "shape": shape, "anchor": where, "color": color, "sound": sound})
+        self.job.save()
+
+    def add_doodle(self):
+        from ..pipeline import doodle_shapes as ds
+        t = self.player.current_source_time()
+        if t is None:
+            QMessageBox.information(self, "Doodle", "Switch the preview to 'Raw video' and pause where you want it.")
+            return
+        k = self.new_kind.currentData()
+        shape, where, color, sound = ds.KINDS[k]
+        dl = self.job.plan.setdefault("doodles", [])
+        dl.append({"id": max([x["id"] for x in dl], default=-1) + 1, "s": round(t, 3), "e": round(t + 1.9, 3),
+                   "kind": k, "shape": shape, "anchor": where, "color": color, "sound": sound, "word": "WOW",
+                   "prompt": "", "file": "", "line": "(added by you)", "enabled": True, "source": "user"})
+        dl.sort(key=lambda x: x["s"])
+        self.job.save()
+        self.refresh_doodles()
 
     def refresh_thumbs(self):
         while self.thumb_grid.count():
@@ -621,7 +740,7 @@ class ReviewTab(QWidget):
 
     def regen_thumbs(self):
         texts = [e.text().strip() for e in self.thumb_texts if e.text().strip()]
-        self.run(actions.regen_thumbs, texts, after=lambda _: (self.load(self.job), self.tabs.setCurrentIndex(3)))
+        self.run(actions.regen_thumbs, texts, after=lambda _: (self.load(self.job), self.tabs.setCurrentIndex(4)))
 
     def upload(self, where: str):
         self.save_publish()

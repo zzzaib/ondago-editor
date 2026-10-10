@@ -114,13 +114,12 @@ def transcribe(wav: Path, model_name: str = "large-v3-turbo", language: str = "a
         from faster_whisper.audio import decode_audio
         model = load_whisper(model_name, compute_type, log)
         audio = decode_audio(str(wav), sampling_rate=16000)
-        try:
-            lang, prob, _ = model.detect_language(audio[: 16000 * 30])
-        except Exception:  # noqa: BLE001
-            lang, prob = "en", 0.0
-        log and log(f"Detected spoken language: {lang} ({prob:.0%})")
-        if lang in ("hi", "ur"):
+        lang, prob, hi_share = detect_language_robust(model, audio, log)
+        # Hinglish speakers often get labelled "en" with low confidence; stock Whisper then TRANSLATES the Hindi
+        # parts into English. Any real Hindi share -> use the Hinglish model, which writes what was actually said.
+        if lang in ("hi", "ur") or hi_share >= 0.2 or (lang == "en" and prob < 0.8 and hi_share >= 0.08):
             use_hinglish = True
+            log and log(f"Hindi/Hinglish speech detected (Hindi share {hi_share:.0%}) - using the Hinglish model")
         else:
             language = lang
     if use_hinglish and hinglish_asr and ensure_hinglish_model(log):
@@ -168,6 +167,37 @@ def transcribe(wav: Path, model_name: str = "large-v3-turbo", language: str = "a
     finally:
         del model
         free_vram()
+
+
+def detect_language_robust(model, audio, log=None) -> tuple[str, float, float]:
+    """Language vote over up to 5 windows spread through the recording (not just the first 30 s).
+    Returns (language, its average probability, average Hindi+Urdu probability)."""
+    sr = 16000
+    n = len(audio)
+    win = 30 * sr
+    starts = [0] if n <= win else sorted({int(x) for x in [0, n * 0.2, n * 0.45, n * 0.7, max(0, n - win)]})
+    totals: dict[str, float] = {}
+    used = 0
+    for st in starts:
+        chunk = audio[st:st + win]
+        if len(chunk) < 5 * sr:
+            continue
+        try:
+            _, _, probs = model.detect_language(chunk)
+        except Exception:  # noqa: BLE001
+            continue
+        used += 1
+        for code, p in probs[:10]:
+            totals[code] = totals.get(code, 0.0) + p
+    if not used:
+        return "en", 0.0, 0.0
+    avg = {k: v / used for k, v in totals.items()}
+    lang = max(avg, key=avg.get)
+    hi = avg.get("hi", 0.0) + avg.get("ur", 0.0)
+    if log:
+        top = ", ".join(f"{k} {v:.0%}" for k, v in sorted(avg.items(), key=lambda x: -x[1])[:3])
+        log(f"Detected spoken language over {used} parts: {top}")
+    return lang, avg[lang], hi
 
 
 def speech_regions(wav: Path) -> list[tuple[float, float]]:

@@ -17,3 +17,7 @@ requests
 google-api-python-client>=2.100
 google-auth-oauthlib>=1.2
 google-auth-httplib2
+# phone app (remote control)
+fastapi>=0.115
+uvicorn>=0.29
+qrcode>=7.4

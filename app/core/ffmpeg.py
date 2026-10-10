@@ -56,9 +56,11 @@ def probe(path: str | Path) -> dict:
     v = next((s for s in data["streams"] if s["codec_type"] == "video"), None)
     a = next((s for s in data["streams"] if s["codec_type"] == "audio"), None)
     info = {"duration": float(data["format"].get("duration", 0) or 0), "has_audio": a is not None,
-            "width": 0, "height": 0, "fps": 30.0, "rotation": 0}
+            "width": 0, "height": 0, "fps": 30.0, "rotation": 0, "transfer": "", "pix_fmt": ""}
     if v:
         info["width"], info["height"] = int(v["width"]), int(v["height"])
+        info["transfer"] = v.get("color_transfer", "") or ""
+        info["pix_fmt"] = v.get("pix_fmt", "") or ""
         num, den = (v.get("avg_frame_rate") or v.get("r_frame_rate") or "30/1").split("/")
         fps = float(num) / float(den) if float(den) else 30.0
         info["fps"] = fps if 1 < fps < 241 else 30.0
@@ -80,27 +82,57 @@ def available_encoders() -> str:
     return out.stdout
 
 
+NVENC_ERROR = ""
+
+
 @lru_cache(maxsize=4)
 def nvenc_works() -> bool:
+    """NVIDIA hardware encoder usable? (5-10x faster renders). The reason is kept in NVENC_ERROR if not."""
+    global NVENC_ERROR
     if "h264_nvenc" not in available_encoders():
+        NVENC_ERROR = "this FFmpeg build has no h264_nvenc"
         return False
     try:
-        run(["-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.2", "-c:v", "h264_nvenc", "-f", "null", "-"])
+        run(["-f", "lavfi", "-i", "color=c=black:s=640x360:r=30:d=0.5", "-pix_fmt", "yuv420p", "-c:v", "h264_nvenc",
+             "-f", "null", "-"])
         return True
-    except Exception:
+    except Exception as e:  # noqa: BLE001
+        NVENC_ERROR = str(e).strip().splitlines()[-1][:300] if str(e).strip() else "unknown error"
         return False
 
 
 def video_codec_args(setting: str = "auto", quality: str = "final") -> list[str]:
     """Encoder args. quality: 'final' or 'intermediate' (near-lossless)."""
     use_nv = setting == "nvenc" or (setting == "auto" and nvenc_works())
+    tags = ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"]
     if use_nv:
-        cq = "16" if quality == "intermediate" else "20"
-        return ["-c:v", "h264_nvenc", "-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", cq, "-b:v", "0",
-                "-profile:v", "high", "-pix_fmt", "yuv420p"]
-    crf = "14" if quality == "intermediate" else "19"
+        cq = "15" if quality == "intermediate" else "18"
+        cap = [] if quality == "intermediate" else ["-maxrate", "16M", "-bufsize", "32M"]
+        return ["-c:v", "h264_nvenc", "-preset", "p6", "-tune", "hq", "-rc", "vbr", "-cq", cq, "-b:v", "0", *cap,
+                "-spatial-aq", "1", "-profile:v", "high", "-pix_fmt", "yuv420p", *tags]
+    crf = "13" if quality == "intermediate" else "18"
     preset = "veryfast" if quality == "intermediate" else "medium"
-    return ["-c:v", "libx264", "-preset", preset, "-crf", crf, "-pix_fmt", "yuv420p"]
+    # final: high quality, but capped so a 3-min 60 fps Reel stays a sensible size to upload
+    extra = [] if quality == "intermediate" else ["-profile:v", "high", "-aq-mode", "3", "-maxrate", "16M",
+                                                  "-bufsize", "32M"]
+    return ["-c:v", "libx264", "-preset", preset, "-crf", crf, *extra, "-pix_fmt", "yuv420p", *tags]
+
+
+@lru_cache(maxsize=1)
+def has_filter(name: str) -> bool:
+    out = subprocess.run([ffmpeg_bin(), "-hide_banner", "-filters"], capture_output=True, text=True,
+                         creationflags=CREATE_NO_WINDOW if IS_WIN else 0)
+    return f" {name} " in out.stdout
+
+
+def hdr_to_sdr(info: dict) -> str:
+    """iPhone/Android HDR (HLG / PQ) -> normal SDR colours, otherwise HDR clips look washed out and grey."""
+    if info.get("transfer") not in ("arib-std-b67", "smpte2084"):
+        return ""
+    if has_filter("zscale") and has_filter("tonemap"):
+        return ("zscale=t=linear:npl=203,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,"
+                "zscale=t=bt709:m=bt709:r=tv,format=yuv420p,")
+    return "colorspace=all=bt709:trc=bt709:format=yuv420p,"
 
 
 # Extra clockwise rotation applied on top of the file's own rotation metadata (fixes sideways phone clips)

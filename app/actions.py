@@ -1,6 +1,8 @@
 """High-level actions used by the GUI (each runs inside a background Task)."""
 from __future__ import annotations
 
+import functools
+import threading
 from pathlib import Path
 
 from .core.job import Job
@@ -8,6 +10,25 @@ from .pipeline import runner
 from .pipeline.broll import BrollResolver, online
 
 
+# One heavy GPU job at a time, whether it was started from the desktop window or from the phone.
+GPU_LOCK = threading.RLock()
+
+
+def heavy(fn):
+    @functools.wraps(fn)
+    def wrap(job, cfg, *args, log, progress, **kw):
+        if not GPU_LOCK.acquire(blocking=False):
+            progress(0.0, "Waiting - another edit is using the GPU")
+            log("Waiting for the GPU (another edit is running)")
+            GPU_LOCK.acquire()
+        try:
+            return fn(job, cfg, *args, log=log, progress=progress, **kw)
+        finally:
+            GPU_LOCK.release()
+    return wrap
+
+
+@heavy
 def full_auto(job: Job, cfg: dict, log, progress) -> str:
     """Raw video -> analysis -> (asks only if B-roll is missing) -> render -> export."""
     runner.analyze(job, cfg, log, lambda p, m: progress(p * 0.55, m))
@@ -19,11 +40,12 @@ def full_auto(job: Job, cfg: dict, log, progress) -> str:
 
 def _stops(job: Job, cfg: dict) -> bool:
     stage = job.plan.get("stage")
-    if stage == "needs_broll" and cfg.get("broll_missing_action", "ask") == "ask":
+    if stage == "needs_broll" and cfg.get("broll_missing_action", "auto") == "ask":
         return True
     return bool(cfg.get("review_before_render", False)) and stage in ("analyzed", "needs_broll")
 
 
+@heavy
 def render(job: Job, cfg: dict, log, progress) -> str:
     runner.render_all(job, cfg, log, progress)
     return "rendered"
@@ -53,6 +75,7 @@ def use_candidate(job: Job, cfg: dict, slot_id: int, idx: int, log, progress) ->
     progress(1.0, "Clip ready")
 
 
+@heavy
 def ai_slot(job: Job, cfg: dict, slot_id: int, log, progress) -> None:
     from .pipeline.broll import generate
     ok, why = generate.available()
@@ -64,6 +87,7 @@ def ai_slot(job: Job, cfg: dict, slot_id: int, log, progress) -> None:
     job.save()
 
 
+@heavy
 def regen_thumbs(job: Job, cfg: dict, texts: list[str], log, progress) -> None:
     from .pipeline.planner import Planner
     from .pipeline.thumbnail import make_thumbnails
@@ -116,3 +140,22 @@ def upload_instagram(job: Job, cfg: dict, log, progress) -> str:
     job.plan.setdefault("published", {})["instagram"] = url
     job.save()
     return url
+
+
+def make_preview(job: Job, kind: str, log=print, progress=None) -> Path:
+    """Small 540p copy of an output for streaming to a phone (cached next to the job)."""
+    from .core import ffmpeg
+    src = job.plan.get("outputs", {}).get(kind)
+    if not src or not Path(src).exists():
+        raise FileNotFoundError(kind)
+    out = job.path(f"preview720_{kind}.mp4")
+    if out.exists() and out.stat().st_mtime >= Path(src).stat().st_mtime:
+        return out
+    vf = "scale=-2:720" if kind == "youtube" else "scale=720:-2"
+    tmp = out.with_suffix(".part.mp4")
+    dur = float(job.plan.get("edit_duration") or 0) or None
+    ffmpeg.run(["-i", src, "-vf", vf, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(tmp)], duration=dur,
+               on_progress=(lambda p: progress(p, "Making phone preview")) if progress else None)
+    tmp.replace(out)
+    return out

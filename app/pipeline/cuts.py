@@ -167,6 +167,49 @@ def detect_retakes_heuristic(transcript: dict, threshold: float = 0.72) -> list[
     return bad
 
 
+def _sim(a: str, b: str) -> float:
+    """How much of a is said again in b (word overlap + sequence similarity)."""
+    wa, wb = a.split(), b.split()
+    if not wa or not wb:
+        return 0.0
+    overlap = len(set(wa) & set(wb)) / max(1, len(set(wa)))
+    seq = difflib.SequenceMatcher(None, a, b).ratio()
+    return max(seq, overlap * 0.9)
+
+
+def validate_retakes(transcript: dict, ids: list[int], heuristic: list[int], log=None) -> list[int]:
+    """The editor model sometimes flags real content as a 'retake'. Only cut a segment when the same thing is
+    said again shortly after (keep the last take), or when it's a short abandoned fragment. The opening hook and
+    the closing lines are never cut unless they're clearly repeated."""
+    segs = transcript["segments"]
+    idx = {s["id"]: i for i, s in enumerate(segs)}
+    heur = set(heuristic)
+    keep: list[int] = []
+    n = len(segs)
+    for sid in sorted(set(ids)):
+        i = idx.get(sid)
+        if i is None:
+            continue
+        s = segs[i]
+        a = norm(s["text"])
+        dur = s["e"] - s["s"]
+        best = 0.0
+        for j in range(i + 1, min(n, i + 4)):
+            if segs[j]["s"] - s["e"] > 30:
+                break
+            best = max(best, _sim(a, norm(segs[j]["text"])))
+        short_fragment = dur <= 2.5 and len(a.split()) <= 6
+        edge = i == 0 or i >= n - 2 or s["s"] < 8.0
+        need = 0.6 if (edge or dur > 10) else 0.4
+        ok = (sid in heur and best >= 0.35) or best >= need or (short_fragment and not edge and best >= 0.2) or (
+            short_fragment and not edge and len(a.split()) <= 2)
+        if ok:
+            keep.append(sid)
+        elif log:
+            log(f"Kept segment {sid} ({dur:.1f}s) that was flagged as a retake: it isn't repeated later")
+    return keep
+
+
 def retake_cuts(transcript: dict, seg_ids: list[int], kind: str = "retake") -> list[dict]:
     by_id = {s["id"]: s for s in transcript["segments"]}
     cuts = []

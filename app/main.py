@@ -10,8 +10,9 @@ faulthandler.enable(file=_crash, all_threads=True)
 
 
 def main():
+    import sys
     from app.gui.main_window import run
-    run()
+    run(background="--background" in sys.argv)
 
 
 if __name__ == "__main__":

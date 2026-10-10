@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14141C">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="OnDaGo">
+<title>OnDaGo Editor</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/static/icon-192.png">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <a href="#/" class="brand"><img src="/static/icon-192.png" alt=""><span>OnDaGo</span></a>
+  <div class="dev" id="dev"><i class="dot"></i><span id="devname">Laptop</span></div>
+</header>
+<main id="app"><div class="center muted">Connecting to your laptop&hellip;</div></main>
+<nav class="tabbar hidden" id="tabbar">
+  <a href="#/" data-k="home"><b>🏠</b><span>Home</span></a>
+  <a href="#/new" data-k="new" class="mid"><b>＋</b><span>New edit</span></a>
+  <a href="#/settings" data-k="settings"><b>⚙️</b><span>Settings</span></a>
+</nav>
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

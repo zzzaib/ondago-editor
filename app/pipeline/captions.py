@@ -77,8 +77,10 @@ def chunk_words(words: list[dict], max_words: int, max_chars: int) -> list[list[
 
 def build_ass(words: list[dict], callouts: list[dict], W: int, H: int, style_name: str = "bold_pop",
               keywords: list[str] | None = None, hook: str = "", show_captions: bool = True,
-              cta: str = "", duration: float = 0.0, cards: list[dict] | None = None) -> str:
-    """words/callouts already in OUTPUT time: words [{w,s,e}], callouts [{s,e,text}]."""
+              cta: str = "", duration: float = 0.0, cards: list[dict] | None = None,
+              regions: list[tuple[float, float, int]] | None = None) -> str:
+    """words/callouts already in OUTPUT time: words [{w,s,e}], callouts [{s,e,text}].
+    regions: split-screen moments (start, end, centre x) - captions move under the panel there."""
     st = STYLES.get(style_name, STYLES["bold_pop"])
     portrait = H > W
     fam, bold = font_family(st.font_file)
@@ -120,9 +122,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             if c_end <= c_start:
                 continue
             texts = [esc(w["w"].upper() if st.upper else w["w"]) for w in ch]
+            rx = next((x for rs, re_, x in regions or [] if rs - 0.05 <= c_start < re_), None)
+            where = f"{{\\an2\\pos({rx},{H - margin_v})\\fs{int(size * 0.8)}}}" if rx is not None else ""
             if not st.word_highlight:
                 body = " ".join(_kw(t, w, kw, st) for t, w in zip(texts, ch))
-                ev.append(f"Dialogue: 0,{ts(c_start)},{ts(c_end)},Cap,,0,0,0,,{_pop(st)}{body}")
+                ev.append(f"Dialogue: 0,{ts(c_start)},{ts(c_end)},Cap,,0,0,0,,{where}{_pop(st)}{body}")
                 continue
             for i, w in enumerate(ch):
                 s = c_start if i == 0 else w["s"]
@@ -139,7 +143,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     else:
                         parts.append(_kw(t, ww, kw, st))
                 lead = "{\\fad(60,0)}" if i == 0 else ""
-                ev.append(f"Dialogue: 0,{ts(s)},{ts(e)},Cap,,0,0,0,,{lead}{' '.join(parts)}")
+                ev.append(f"Dialogue: 0,{ts(s)},{ts(e)},Cap,,0,0,0,,{where}{lead}{' '.join(parts)}")
     for c in callouts:
         txt = esc(c["text"].upper())[:40]
         ev.append(f"Dialogue: 1,{ts(c['s'])},{ts(c['e'])},Callout,,0,0,0,,"
@@ -150,8 +154,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                   f"{esc(hook.upper())[:48]}")
     for c in cards or []:
         st_ms = int((c["e"] - c["s"]) * 1000)
+        where = f"\\pos({c['pos'][0]},{c['pos'][1]})\\fs{c['size']}" if c.get("pos") else ""
         ev.append(f"Dialogue: 4,{ts(c['s'] + 0.12)},{ts(c['e'] - 0.05)},Card,,0,0,0,,"
-                  f"{{\\fscx40\\fscy40\\t(0,170,\\fscx108\\fscy108)\\t(170,280,\\fscx100\\fscy100)"
+                  f"{{{where}\\fscx40\\fscy40\\t(0,170,\\fscx108\\fscy108)\\t(170,280,\\fscx100\\fscy100)"
                   f"\\t(280,{max(300, st_ms)},\\fscx106\\fscy106)\\fad(0,120)}}{esc(c['text'].upper())[:32]}")
     if cta and duration > 4:
         t0 = max(0.0, duration - 2.4)

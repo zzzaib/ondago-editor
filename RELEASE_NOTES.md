@@ -1,26 +1,49 @@
-## OnDaGo Editor v1.0.0: first public release
+## OnDaGo Editor v2.0.0: edit from your phone + animated doodles
 
-Offline AI video editor for Windows. Drop in a raw recording, get back a YouTube video, an Instagram Reel, thumbnails and titles, all generated on your own NVIDIA GPU.
+### What's new
+**📱 Phone app: edit from anywhere**
+- Leave the laptop on. From your phone (Android, iPhone or any browser) you can:
+  - pick a video from the phone or from the laptop's folders
+  - choose the options and watch progress live
+  - fix B-roll, change doodles and text, and pick a thumbnail
+  - watch a preview, download the HD file and publish
+- **No static IP needed:** use Tailscale (free, private) or a password-protected Cloudflare link.
+- **Pair by QR code**, add it to your home screen like an app, and get **push notifications** (ntfy) when an edit is ready or needs you.
+- **Runs in the tray:** it can start with Windows and keeps the laptop awake while the phone app is on.
+- Uploads are **resumable** (8 MB chunks), so flaky mobile data doesn't restart a 2 GB upload.
+- **Same Wi-Fi = direct, full-speed transfers:** at home the phone automatically sends uploads and plays or downloads videos straight from the laptop over your router, with no internet data (⚡ Wi-Fi badge).
 
-### Download & install
+**✨ Animated doodles**
+- More than 25 hand-drawn doodles that draw themselves on screen: lightbulb ideas, arrows pointing at you, crowns, hearts, ₹/$ money, graphs, rockets, WOW/BOOM bursts and more. Each one has a marker wobble, the hand-drawn "boil" and a matching sound.
+- The editor AI picks the moments from what you say. Doodles are **placed around your face**, never on it or on the captions, separately for YouTube and Reel framing.
+- **Glowing sticker outline** around you on key moments, and **marker underlines / circles** on pop-up text.
+- **AI custom doodles** on RTX GPUs: FLUX draws anything, then the app animates it. The option is greyed out on GPUs that can't run it.
+- New **Review → Doodles** tab: change the type, add one at any moment, or switch them off.
+
+**🎬 Better edits with less work**
+- **Split-screen push-aside moments:** you glide to one side while footage or an animated keyword card slides in beside you. Reels get a picture-in-picture card.
+- **Vertical recordings on YouTube** look like a designed layout (rounded card, soft backdrop) instead of blurred bars.
+- **Nothing important gets chopped:** retakes are only removed when you really repeat yourself; the opening and ending are protected; Reels keep the full video when it's under 3 minutes.
+- **Better Hindi/Hinglish detection:** the language is checked across the whole recording, so Hinglish speech goes to the Hinglish model instead of being translated into English.
+- **Online B-roll without a key** (openly-licensed photos), and the app decides for you instead of stopping to ask.
+- **Higher quality:** HDR tone-mapping for phone clips, better encoder settings, 720p phone previews with an HD button.
+
+**Fixes**
+- The installer no longer fails when the install folder path contains a space (e.g. `C:\Users\Designer 1\...`).
+
+### Upgrading from v1
+Extract v2 over your v1 folder and run **`install.bat`** again. It only installs the new libraries and the small outline model (~170 MB). Your settings, projects and models are kept.
+
+### Download & install (new users)
 1. Download **`OnDaGoEditor.zip`** below. Don't use "Source code".
 2. Extract to a short path, e.g. `C:\OnDaGo`.
 3. In PowerShell: `Get-ChildItem C:\OnDaGo -Recurse | Unblock-File`
-4. Run **`install.bat`**. On first run it downloads about 35 GB of AI models into the folder. Use `install.bat -Lite` to skip the 16 GB image model.
-5. Start **OnDaGo Editor** from the desktop shortcut.
+4. Run **`install.bat`**. The first run downloads about 35 GB of AI models; use `install.bat -Lite` to skip the 16 GB image model.
+5. Start **OnDaGo Editor** from the desktop shortcut. For the phone app, open the **Phone & remote** tab.
 
-**Requirements:** Windows 10/11 64-bit · NVIDIA GPU with 8 GB VRAM recommended (RTX 20-series or newer for all features; GTX 10-series supported without AI images) · driver 560+ · 16 GB RAM · ~45 GB free disk.
-
-### Highlights
-- Removes silences, fillers and retakes with word-safe cuts
-- Animated word-by-word captions, including **Hinglish in Roman script**
-- B-roll from your own library or Pexels/Pixabay, checked by a vision model, with animated text cards as a fallback. It asks you when nothing fits.
-- Jump-cut zooms, push-ins, slide transitions, sound effects, colour grade, end card
-- YouTube 16:9 and Reel 9:16 from one recording, with automatic orientation fix and face-tracked vertical crop
-- AI thumbnails, titles, descriptions, chapters, tags and captions
-- One-click upload to YouTube and Instagram
+**Requirements:** Windows 10/11 64-bit · NVIDIA GPU, 8 GB VRAM recommended (RTX 20-series or newer for every feature; GTX 10-series works without AI images and AI doodles) · driver 560+ · 16 GB RAM · ~45 GB free disk.
 
 ### Known limitations
-- Hinglish transcription is much better than stock Whisper but not perfect. Add your brand and product names in Settings.
-- AI image generation needs an RTX 20-series or newer GPU.
-- YouTube API uploads stay Private until your Google Cloud project is audited.
+- Publishing to YouTube from the phone needs YouTube connected once in the desktop app.
+- A quick Cloudflare link changes every time the app restarts. Turn on ntfy to receive the new one, or use your own domain.
+- Laptops still sleep when the lid closes unless you set the lid action to "Do nothing" while plugged in.

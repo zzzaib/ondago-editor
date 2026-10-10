@@ -1,4 +1,5 @@
-"""ONLINE B-roll: Pexels + Pixabay free stock-video APIs (free keys, pasted once in Settings)."""
+"""ONLINE B-roll: Pexels + Pixabay free stock-video APIs (free keys, pasted once in Settings), plus
+Openverse (openly-licensed photos, no key needed) so online B-roll works out of the box."""
 from __future__ import annotations
 
 import hashlib
@@ -54,10 +55,39 @@ def search_pixabay(query: str, key: str, min_dur: float, n: int = 6) -> list[dic
     return out
 
 
+def search_openverse(query: str, n: int = 4) -> list[dict]:
+    """Keyless: Creative-Commons photos that allow commercial use + modification (credited in the description)."""
+    r = requests.get("https://api.openverse.org/v1/images/", headers=UA, timeout=20,
+                     params={"q": query[:200], "page_size": max(3, n), "license_type": "commercial,modification",
+                             "mature": "false"})
+    r.raise_for_status()
+    out = []
+    for h in r.json().get("results", []):
+        w = h.get("width") or 0
+        if (w and w < 900) or not h.get("url"):
+            continue
+        lic = f"{(h.get('license') or '').upper()} {h.get('license_version') or ''}".strip()
+        out.append({"source": "openverse", "id": f"ov_{h.get('id', '')[:24]}", "url": h["url"],
+                    "preview_url": h.get("thumbnail") or h["url"], "page": h.get("foreign_landing_url", ""),
+                    "author": f"{h.get('creator') or 'unknown'} ({lic})", "kind": "image", "duration": 999,
+                    "query": query, "file_start": 0.0})
+    return out
+
+
 def search(queries: list[str], cfg: dict, min_dur: float, log: Callable[[str], None] = print,
            per_query: int = 3) -> list[dict]:
     results: list[dict] = []
     seen = set()
+    if not has_video_keys(cfg):  # no keys yet: openly-licensed photos (animated with a slow pan)
+        for q in queries[:3]:
+            try:
+                for c in search_openverse(q, per_query + 2)[:per_query]:
+                    if c["id"] not in seen:
+                        seen.add(c["id"])
+                        results.append(c)
+            except Exception as e:  # noqa: BLE001
+                log(f"openverse search failed for '{q}': {e}")
+        return results
     for q in queries[:3]:
         for name, fn in (("pexels", lambda q: search_pexels(q, cfg["pexels_key"], min_dur, n=per_query + 2)),
                          ("pixabay", lambda q: search_pixabay(q, cfg["pixabay_key"], min_dur, n=per_query + 2))):
@@ -97,8 +127,16 @@ def download_preview(c: dict, folder: Path) -> str | None:
 
 
 def download_video(c: dict) -> str:
+    if c.get("kind") == "image":
+        ext = Path(c["url"].split("?")[0]).suffix.lower()
+        return str(_download(c["url"], DL_DIR / f"{c['id']}{ext if ext in ('.jpg', '.jpeg', '.png', '.webp') else '.jpg'}"))
     return str(_download(c["url"], DL_DIR / f"{c['id']}.mp4"))
 
 
-def available(cfg: dict) -> bool:
+def has_video_keys(cfg: dict) -> bool:
     return bool(cfg.get("pexels_key") or cfg.get("pixabay_key"))
+
+
+def available(cfg: dict) -> bool:
+    """Online B-roll works without keys (photos); a free Pexels/Pixabay key adds real video clips."""
+    return has_video_keys(cfg) or bool(cfg.get("broll_keyless", True))

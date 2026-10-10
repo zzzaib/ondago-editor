@@ -133,6 +133,17 @@ def main():
         failures.append(f"rembg: {e}")
         print(f"  [FAIL] {e}")
 
+    step("Doodles: person outline model (u2net human segmentation, ~170 MB)")
+    try:
+        from app.pipeline.doodles import _seg_session
+        if _seg_session(lambda m: None):
+            ok("u2net_human_seg")
+        else:
+            failures.append("outline model (the glowing outline effect will be skipped)")
+    except Exception as e:  # noqa: BLE001
+        failures.append(f"outline model: {e}")
+        print(f"  [FAIL] {e}")
+
     if not a.lite:
         step("AI images: FLUX.2 [klein] 4B (~16 GB, Apache-2.0)")
         try:

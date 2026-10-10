@@ -5,20 +5,21 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QObject, Qt, QUrl, Signal
+from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QIcon
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame,
-                               QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-                               QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
-                               QSpinBox, QTabWidget, QVBoxLayout, QWidget)
+                               QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
+                               QPlainTextEdit, QPushButton, QScrollArea,
+                               QSpinBox, QStackedWidget, QSystemTrayIcon, QVBoxLayout, QWidget)
 
-from .. import actions
 from ..core import settings as settings_mod
 from ..core.job import Job
-from ..core.paths import DATA, IS_WIN
+from ..core.paths import DATA, IS_WIN, ROOT
+from ..version import VERSION
+from .create_page import CreateTab, ProjectsPage
+from .remote_tab import RemoteTab, autostart_server
 from .review import ReviewTab
 from .theme import QSS
-from .workers import Task
 
 VIDEO_FILTER = "Videos (*.mp4 *.mov *.mkv *.m4v *.avi *.webm *.MP4 *.MOV)"
 
@@ -31,50 +32,6 @@ def open_path(p: str | Path):
         QDesktopServices.openUrl(QUrl.fromLocalFile(p))
 
 
-# ======================================================================= Create
-class DropZone(QFrame):
-    def __init__(self, on_file):
-        super().__init__()
-        self.setObjectName("drop")
-        self.on_file = on_file
-        self.setAcceptDrops(True)
-        self.setMinimumHeight(190)
-        lay = QVBoxLayout(self)
-        t = QLabel("Drop your raw video here")
-        t.setObjectName("h1")
-        t.setAlignment(Qt.AlignCenter)
-        s = QLabel("or click to browse  -  MP4, MOV, MKV")
-        s.setObjectName("muted")
-        s.setAlignment(Qt.AlignCenter)
-        lay.addStretch()
-        lay.addWidget(t)
-        lay.addWidget(s)
-        lay.addStretch()
-        self.setCursor(Qt.PointingHandCursor)
-
-    def mousePressEvent(self, e):
-        f, _ = QFileDialog.getOpenFileName(self, "Choose raw video", "", VIDEO_FILTER)
-        if f:
-            self.on_file(f)
-
-    def dragEnterEvent(self, e):
-        if e.mimeData().hasUrls():
-            e.acceptProposedAction()
-            self.setProperty("hover", True)
-            self.style().polish(self)
-
-    def dragLeaveEvent(self, e):
-        self.setProperty("hover", False)
-        self.style().polish(self)
-
-    def dropEvent(self, e):
-        self.setProperty("hover", False)
-        self.style().polish(self)
-        urls = [u.toLocalFile() for u in e.mimeData().urls()]
-        if urls:
-            self.on_file(urls[0])
-
-
 def combo(items: list[tuple[str, str]], value: str) -> QComboBox:
     c = QComboBox()
     for label, key in items:
@@ -83,181 +40,6 @@ def combo(items: list[tuple[str, str]], value: str) -> QComboBox:
     c.setCurrentIndex(max(0, i))
     return c
 
-
-class CreateTab(QWidget):
-    def __init__(self, win: "MainWindow"):
-        super().__init__()
-        self.win = win
-        s = win.cfg
-        root = QHBoxLayout(self)
-        left = QVBoxLayout()
-        root.addLayout(left, 3)
-        self.drop = DropZone(self.set_file)
-        left.addWidget(self.drop)
-        self.file_label = QLabel("No video selected")
-        self.file_label.setObjectName("muted")
-        left.addWidget(self.file_label)
-
-        opts = QGroupBox("What should I do?")
-        g = QGridLayout(opts)
-        self.c_fill = QCheckBox("Remove filler words (um, uh)")
-        self.c_fill.setChecked(s["remove_fillers"])
-        self.c_sil = QCheckBox("Remove silences")
-        self.c_sil.setChecked(s["remove_silences"])
-        self.c_ret = QCheckBox("Remove retakes / false starts")
-        self.c_ret.setChecked(s["remove_retakes"])
-        self.c_call = QCheckBox("Pop-up text callouts")
-        self.c_call.setChecked(s["callouts"])
-        self.c_bar = QCheckBox("Progress bar")
-        self.c_bar.setChecked(s["progress_bar"])
-        self.c_push = QCheckBox("Smooth camera push-ins")
-        self.c_push.setChecked(s.get("smooth_zoom", True))
-        self.c_sfx = QCheckBox("Sound effects (whoosh / pop)")
-        self.c_sfx.setChecked(s.get("sfx", True))
-        self.c_grade = QCheckBox("Colour grade (contrast + vibrance)")
-        self.c_grade.setChecked(s.get("color_grade", True))
-        self.script = combo([("Auto (Hinglish speech -> Roman Hinglish)", "auto"), ("Hinglish in Roman letters", "hinglish"),
-                             ("Native script (e.g. Devanagari)", "native")], s.get("caption_script", "auto"))
-        self.c_music = QCheckBox("Background music (ducked)")
-        self.c_music.setChecked(s["music"])
-        self.cap = combo([("Bold Pop (word highlight)", "bold_pop"), ("Clean box", "clean"), ("Minimal", "minimal"),
-                          ("No captions", "off")], s["caption_style"] if s["captions"] else "off")
-        self.broll = combo([("Offline + Online", "both"), ("Offline only (my library + AI)", "offline"),
-                            ("Online only (Pexels / Pixabay)", "online"), ("No B-roll", "off")], s["broll_mode"])
-        self.missing = combo([("Ask me + suggest what to use", "ask"), ("Use an animated text card", "card"),
-                              ("Generate an AI image", "ai"), ("Skip that moment", "skip")], s["broll_missing_action"])
-        self.zoom = combo([("Jump-cut punch-ins + emphasis", "jumpcut"), ("Emphasis zooms only", "emphasis"),
-                           ("No zooms", "off")], s["zoom_style"])
-        self.rot = combo([("Auto-detect (fixes sideways phone videos)", "auto"), ("As recorded", "0"),
-                          ("Rotate 90\u00b0 right", "90"), ("Rotate 90\u00b0 left", "270"), ("Rotate 180\u00b0", "180")],
-                         str(s.get("rotation", "auto")))
-        self.o_yt = QCheckBox("YouTube 16:9")
-        self.o_yt.setChecked(s["output_youtube"])
-        self.o_reel = QCheckBox("Instagram Reel 9:16")
-        self.o_reel.setChecked(s["output_reel"])
-        self.reel_mode = combo([("Best highlight (AI picks)", "highlight"), ("Full video", "full")], s["reel_mode"])
-        self.c_review = QCheckBox("Let me review before rendering")
-        self.c_review.setChecked(s.get("review_before_render", False))
-        r = 0
-        for w in (self.c_fill, self.c_sil, self.c_ret):
-            g.addWidget(w, r, 0, 1, 2)
-            r += 1
-        g.addWidget(QLabel("Captions"), r, 0); g.addWidget(self.cap, r, 1); r += 1
-        g.addWidget(QLabel("B-roll"), r, 0); g.addWidget(self.broll, r, 1); r += 1
-        g.addWidget(QLabel("If no B-roll fits"), r, 0); g.addWidget(self.missing, r, 1); r += 1
-        g.addWidget(QLabel("Zoom"), r, 0); g.addWidget(self.zoom, r, 1); r += 1
-        g.addWidget(QLabel("Orientation"), r, 0); g.addWidget(self.rot, r, 1); r += 1
-        g.addWidget(QLabel("Caption script"), r, 0); g.addWidget(self.script, r, 1); r += 1
-        for w in (self.c_call, self.c_bar, self.c_push, self.c_sfx, self.c_grade, self.c_music):
-            g.addWidget(w, r, 0, 1, 2)
-            r += 1
-        outs = QHBoxLayout()
-        outs.addWidget(self.o_yt)
-        outs.addWidget(self.o_reel)
-        outs.addWidget(self.reel_mode)
-        g.addWidget(QLabel("Outputs"), r, 0); g.addLayout(outs, r, 1); r += 1
-        g.addWidget(self.c_review, r, 0, 1, 2)
-        left.addWidget(opts)
-
-        self.start = QPushButton("Auto-Edit My Video")
-        self.start.setObjectName("primary")
-        self.start.setEnabled(False)
-        self.start.clicked.connect(self.run)
-        left.addWidget(self.start)
-        self.bar = QProgressBar()
-        self.bar.setRange(0, 1000)
-        left.addWidget(self.bar)
-        self.status = QLabel("")
-        self.status.setObjectName("muted")
-        left.addWidget(self.status)
-        left.addStretch()
-
-        right = QVBoxLayout()
-        root.addLayout(right, 2)
-        right.addWidget(QLabel("Recent projects (double-click to open)"))
-        self.recent = QListWidget()
-        self.recent.itemDoubleClicked.connect(lambda it: self.win.open_job(Job(it.data(Qt.UserRole))))
-        right.addWidget(self.recent)
-        self.refresh_recent()
-        self.path: str | None = None
-        self.task: Task | None = None
-
-    def refresh_recent(self):
-        self.recent.clear()
-        for j in Job.list_recent():
-            stage = j.plan.get("stage", "?")
-            it = QListWidgetItem(f"{Path(j.plan.get('source', '')).name}   [{stage}]   "
-                                 f"{time.strftime('%d %b %H:%M', time.localtime(j.plan.get('created', 0)))}")
-            it.setData(Qt.UserRole, str(j.dir))
-            self.recent.addItem(it)
-
-    def set_file(self, f: str):
-        self.path = f
-        self.file_label.setText(f)
-        self.start.setEnabled(True)
-
-    def collect(self) -> dict:
-        s = self.win.cfg
-        cap = self.cap.currentData()
-        s.update({
-            "remove_fillers": self.c_fill.isChecked(), "remove_silences": self.c_sil.isChecked(),
-            "remove_retakes": self.c_ret.isChecked(), "callouts": self.c_call.isChecked(),
-            "progress_bar": self.c_bar.isChecked(), "music": self.c_music.isChecked(),
-            "smooth_zoom": self.c_push.isChecked(), "sfx": self.c_sfx.isChecked(),
-            "color_grade": self.c_grade.isChecked(), "caption_script": self.script.currentData(),
-            "captions": cap != "off", "caption_style": cap if cap != "off" else s["caption_style"],
-            "broll_mode": self.broll.currentData(), "broll_missing_action": self.missing.currentData(),
-            "zoom_style": self.zoom.currentData(), "rotation": self.rot.currentData(),
-            "output_youtube": self.o_yt.isChecked(),
-            "output_reel": self.o_reel.isChecked(), "reel_mode": self.reel_mode.currentData(),
-            "review_before_render": self.c_review.isChecked(),
-        })
-        settings_mod.save(s)
-        return s
-
-    def run(self):
-        if not self.path or not Path(self.path).exists():
-            return
-        cfg = self.collect()
-        if not (cfg["output_youtube"] or cfg["output_reel"]):
-            QMessageBox.warning(self, "Nothing to export", "Pick at least one output.")
-            return
-        job = Job.create(self.path)
-        self.win.current_job = job
-        self.start.setEnabled(False)
-        self.task = Task(actions.full_auto, job, cfg)
-        self.task.progress.connect(self.on_progress)
-        self.task.log.connect(self.win.log)
-        self.task.done.connect(lambda stage: self.finished(job, stage))
-        self.task.failed.connect(self.failed)
-        self.task.start()
-
-    def on_progress(self, p: float, msg: str):
-        self.bar.setValue(int(p * 1000))
-        if msg:
-            self.status.setText(msg)
-
-    def finished(self, job: Job, stage: str):
-        self.start.setEnabled(True)
-        self.bar.setValue(1000)
-        self.refresh_recent()
-        job = Job(job.dir)
-        if stage == "rendered":
-            self.status.setText("Done! Your videos, thumbnail and metadata are ready.")
-            self.win.notify("Edit finished", f"Saved to {job.plan.get('export_dir', '')}")
-        elif stage == "needs_broll":
-            n = sum(1 for s in job.plan.get("broll", []) if s["status"] == "needs_input")
-            self.status.setText(f"{n} moment(s) need B-roll from you - see the Review tab.")
-            self.win.notify("Your input needed", f"I couldn't find B-roll for {n} moment(s). "
-                            "I've suggested what to use - add a file, search, generate, or skip.")
-        else:
-            self.status.setText("Analysis ready - review and press Render.")
-        self.win.open_job(job, focus="broll" if stage == "needs_broll" else None)
-
-    def failed(self, err: str):
-        self.start.setEnabled(True)
-        self.status.setText("Failed: " + err[:200])
-        QMessageBox.critical(self, "Something went wrong", err[:2000] + "\n\nSee the Log tab for details.")
 
 
 # ===================================================================== Settings
@@ -268,7 +50,21 @@ class SettingsTab(QScrollArea):
         self.setWidgetResizable(True)
         body = QWidget()
         self.setWidget(body)
-        lay = QVBoxLayout(body)
+        outer = QHBoxLayout(body)
+        outer.addStretch(1)
+        col = QWidget()
+        col.setMaximumWidth(900)
+        outer.addWidget(col, 12)
+        outer.addStretch(1)
+        lay = QVBoxLayout(col)
+        lay.setContentsMargins(28, 26, 28, 36)
+        lay.setSpacing(12)
+        h = QLabel("Settings")
+        h.setObjectName("h1")
+        lay.addWidget(h)
+        sub = QLabel("All optional. The presets on the New edit page already cover most videos.")
+        sub.setObjectName("muted")
+        lay.addWidget(sub)
         s = win.cfg
         self.w: dict[str, QWidget] = {}
 
@@ -360,6 +156,14 @@ class SettingsTab(QScrollArea):
                        '<a style="color:#B8A8FF" href="https://pixabay.com/api/docs/">Get Pixabay key</a>')
         links.setOpenExternalLinks(True)
         f.addRow("", links)
+        lay.addWidget(g)
+
+        g = QGroupBox("Doodles")
+        f = QFormLayout(g)
+        f.addRow("How many", cmb("doodle_density", [("A few (every ~30 s)", "low"), ("Some (every ~15 s)", "medium"),
+                                                   ("Lots (every ~8 s)", "high")]))
+        f.addRow("", chk("callout_doodles", "Underline / circle the pop-up text with a marker"))
+        f.addRow("", QLabel("Turn doodles, the outline and AI doodles on or off per video on the Create tab."))
         lay.addWidget(g)
 
         g = QGroupBox("Audio")
@@ -461,7 +265,7 @@ class SettingsTab(QScrollArea):
                 s[k] = w.value()
             elif isinstance(w, QDoubleSpinBox):
                 s[k] = w.value()
-        settings_mod.save(s)
+        settings_mod.update(**{k: s[k] for k in self.w})
         self.win.statusBar().showMessage("Settings saved", 3000)
 
     def connect_youtube(self):
@@ -485,27 +289,115 @@ class SettingsTab(QScrollArea):
 
 
 # ======================================================================== Window
+class _Bridge(QObject):
+    event = Signal(dict)
+
+
+NAV = [("create", "✨   New edit"), ("projects", "🗂   Projects"), ("review", "🎬   Review && publish"),
+       ("remote", "📱   Phone app"), ("settings", "⚙️   Settings"), ("log", "📝   Log")]
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("OnDaGo Editor")
-        self.resize(1380, 900)
+        self.setWindowTitle(f"OnDaGo Editor {VERSION}")
+        ico = ROOT / "app" / "gui" / "icon.ico"
+        self.icon = QIcon(str(ico)) if ico.exists() else QIcon()
+        self.setWindowIcon(self.icon)
+        self.resize(1360, 880)
+        self.setMinimumSize(980, 640)
+        settings_mod.ensure_secret()
         self.cfg = settings_mod.load()
         self.current_job: Job | None = None
         self.logfile = open(DATA / "app.log", "a", encoding="utf-8")
-        self.tabs = QTabWidget()
-        self.setCentralWidget(self.tabs)
+
+        root = QWidget()
+        h = QHBoxLayout(root)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(0)
+        side = QFrame()
+        side.setObjectName("sidebar")
+        side.setFixedWidth(228)
+        sv = QVBoxLayout(side)
+        sv.setContentsMargins(14, 18, 14, 14)
+        sv.setSpacing(4)
+        brand = QLabel("OnDaGo")
+        brand.setObjectName("brand")
+        sv.addWidget(brand)
+        self.nav: dict[str, QPushButton] = {}
+        for key, text in NAV:
+            b = QPushButton(text)
+            b.setObjectName("nav")
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _=False, k=key: self.go(k))
+            sv.addWidget(b)
+            self.nav[key] = b
+            if key == "review":
+                sv.addSpacing(12)
+        sv.addStretch()
+        self.phone_pill = QPushButton("Phone app off")
+        self.phone_pill.setObjectName("chip")
+        self.phone_pill.setCursor(Qt.PointingHandCursor)
+        self.phone_pill.setCheckable(True)
+        self.phone_pill.clicked.connect(lambda: self.go("remote"))
+        sv.addWidget(self.phone_pill, 0, Qt.AlignLeft)
+        foot = QLabel(f"v{VERSION}  ·  runs offline on your PC")
+        foot.setObjectName("navfoot")
+        sv.addWidget(foot)
+        h.addWidget(side)
+
+        self.stack = QStackedWidget()
+        h.addWidget(self.stack, 1)
+        self.setCentralWidget(root)
+
+        self.logview = QPlainTextEdit()
+        self.logview.setObjectName("log")
+        self.logview.setReadOnly(True)
+        self.logview.setMaximumBlockCount(5000)
+        self.projects = ProjectsPage(self)
         self.create = CreateTab(self)
         self.review = ReviewTab(self)
         self.settings = SettingsTab(self)
-        self.logview = QPlainTextEdit()
-        self.logview.setReadOnly(True)
-        self.logview.setMaximumBlockCount(5000)
-        self.tabs.addTab(self.create, "  Create  ")
-        self.tabs.addTab(self.review, "  Review && Publish  ")
-        self.tabs.addTab(self.settings, "  Settings  ")
-        self.tabs.addTab(self.logview, "  Log  ")
+        self.remote = RemoteTab(self)
+        logpage = QWidget()
+        lv = QVBoxLayout(logpage)
+        lv.setContentsMargins(28, 26, 28, 24)
+        lv.setSpacing(8)
+        t = QLabel("Log")
+        t.setObjectName("h1")
+        lv.addWidget(t)
+        tip = QLabel("Everything the editor is doing, step by step. Handy if something goes wrong.")
+        tip.setObjectName("muted")
+        lv.addWidget(tip)
+        lv.addWidget(self.logview, 1)
+        self.pages = {"create": self.create, "projects": self.projects, "review": self.review,
+                      "remote": self.remote, "settings": self.settings, "log": logpage}
+        for w in self.pages.values():
+            self.stack.addWidget(w)
+        self.go("create")
+
         self.statusBar().showMessage("Ready - drop a video to start")
+        self._quitting = False
+        self._tray_hint = False
+        # phone-app tasks -> refresh lists + tray messages (signal hops to the GUI thread)
+        from ..core.tasks import MANAGER
+        self.bridge = _Bridge()
+        self.bridge.event.connect(self._remote_event)
+        MANAGER.subscribe(self.bridge.event.emit)
+        self.tray = None
+        autostart_server(self)
+        self.update_tray()
+
+    def go(self, name: str):
+        w = self.pages.get(name)
+        if w is None:
+            return
+        self.stack.setCurrentWidget(w)
+        for k, b in self.nav.items():
+            b.setChecked(k == name)
+        if name == "projects":
+            self.projects.refresh()
 
     def log(self, msg: str):
         line = f"[{time.strftime('%H:%M:%S')}] {msg}"
@@ -516,20 +408,119 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _remote_event(self, ev: dict):
+        if ev.get("type") == "log":
+            self.logview.appendPlainText(ev.get("line", ""))
+            return
+        t = ev.get("task", {})
+        if t.get("state") in ("done", "failed"):
+            self.projects.refresh()
+            if self.review.job and self.review.job.name == t.get("job") and not (
+                    self.review.task and self.review.task.isRunning()):
+                self.review.load(Job(self.review.job.dir))
+            if self.tray and not self.isVisible():
+                self.tray.showMessage("OnDaGo", f"{t.get('label')} {'finished' if t['state'] == 'done' else 'failed'}",
+                                      self.icon, 5000)
+
     def open_job(self, job: Job, focus: str | None = None):
         self.current_job = job
         self.review.load(job, focus)
-        self.tabs.setCurrentWidget(self.review)
+        self.go("review")
 
     def notify(self, title: str, msg: str):
         self.statusBar().showMessage(f"{title}: {msg}", 15000)
         QApplication.alert(self)
 
+    # ------------------------------------------------------------ tray / background
+    def update_tray(self):
+        from ..remote.server import get_server
+        on = get_server().running()
+        self.phone_pill.setText("●  Phone app on" if on else "○  Phone app off")
+        self.phone_pill.setChecked(on)
+        want = on and QSystemTrayIcon.isSystemTrayAvailable()
+        if want and self.tray is None:
+            self.tray = QSystemTrayIcon(self.icon, self)
+            self.tray.setToolTip("OnDaGo Editor - phone app on")
+            m = QMenu()
+            a_open = QAction("Open OnDaGo", m)
+            a_open.triggered.connect(self.show_front)
+            a_copy = QAction("Copy phone link", m)
+            a_copy.triggered.connect(lambda: QGuiApplication.clipboard().setText(get_server().best_url()))
+            a_quit = QAction("Quit (phone app stops)", m)
+            a_quit.triggered.connect(self.quit_app)
+            for a in (a_open, a_copy, a_quit):
+                m.addAction(a)
+            self.tray.setContextMenu(m)
+            self.tray.activated.connect(lambda r: self.show_front() if r in (
+                QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick) else None)
+            self._tray_menu = m
+            self.tray.show()
+        elif not want and self.tray is not None:
+            self.tray.hide()
+            self.tray.deleteLater()
+            self.tray = None
 
-def run():
+    def show_front(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def closeEvent(self, e):
+        from ..remote.server import get_server
+        if not self._quitting and self.tray and get_server().running() and settings_mod.load().get("close_to_tray", True):
+            e.ignore()
+            self.hide()
+            if not self._tray_hint:
+                self._tray_hint = True
+                self.tray.showMessage("OnDaGo keeps running", "Your phone can still reach it. Right-click the tray "
+                                      "icon to quit.", self.icon, 6000)
+            return
+        self.quit_app()
+        e.accept()
+
+    def quit_app(self):
+        from ..remote.server import get_server
+        self._quitting = True
+        t = getattr(self.projects, "_cover_task", None)
+        if t is not None and t.isRunning():
+            t.wait(4000)
+        try:
+            get_server().stop()
+        except Exception:  # noqa: BLE001
+            pass
+        QApplication.quit()
+
+
+def run(background: bool = False):
+    import hashlib
+
+    from PySide6.QtNetwork import QLocalServer, QLocalSocket
     app = QApplication(sys.argv)
     app.setApplicationName("OnDaGo Editor")
     app.setStyleSheet(QSS)
+    # one OnDaGo at a time: a second launch just brings the first one to the front
+    key = "OnDaGoEditor-" + hashlib.md5(str(ROOT).lower().encode()).hexdigest()[:10]
+    sock = QLocalSocket()
+    sock.connectToServer(key)
+    if sock.waitForConnected(400):
+        sock.write(b"show")
+        sock.flush()
+        sock.waitForBytesWritten(400)
+        return
+    QLocalServer.removeServer(key)
+    single = QLocalServer()
+    single.listen(key)
+    app.setQuitOnLastWindowClosed(False)
     w = MainWindow()
-    w.show()
+
+    def on_conn():
+        c = single.nextPendingConnection()
+        if c:
+            c.readyRead.connect(lambda: (c.readAll(), w.show_front()))
+            w.show_front()
+    single.newConnection.connect(on_conn)
+    if background and w.tray is not None:
+        w.tray.showMessage("OnDaGo is running", "The phone app is on. Open me from the tray icon.", w.icon, 5000)
+    else:
+        w.show()
     sys.exit(app.exec())

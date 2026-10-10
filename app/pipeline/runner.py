@@ -12,6 +12,7 @@ from typing import Callable
 from ..core import ffmpeg
 from ..core.job import Job
 from . import captions, cuts, face, render
+from . import layout as layout_mod
 from .broll import BrollResolver, build_slots
 from .planner import Planner, fmt_time
 from .timeline import Timeline, compute_keeps
@@ -83,6 +84,12 @@ def analyze(job: Job, cfg: dict, log: Log, progress: Prog) -> None:
 
     # ---- editor LLM (also used for Hinglish captions)
     p = st.sub("llm")
+    if cfg.get("doodles", True) and cfg.get("doodle_ai", False):
+        from .broll.generate import available as _ai_avail
+        ok_ai, why_ai = _ai_avail()
+        cfg = {**cfg, "_ai_doodles_ok": ok_ai}
+        if not ok_ai:
+            log(f"AI custom doodles off: {why_ai}")
     planner = Planner({**cfg, "_language": tr["language"]}, log=log)
     p(0.02, "Loading editor model (Qwen 3.5)")
     planner.prepare(lambda x, m: p(0.02 + 0.2 * x, f"Downloading LLM: {m}"))
@@ -113,7 +120,7 @@ def analyze(job: Job, cfg: dict, log: Log, progress: Prog) -> None:
         p(0.25, "Detecting retakes and false starts")
         heur = cuts.detect_retakes_heuristic(tr)
         llm_ids = planner.find_retakes(segs)
-        retake_ids = sorted(set(heur) | set(llm_ids))
+        retake_ids = cuts.validate_retakes(tr, sorted(set(heur) | set(llm_ids)), heur, log)
         all_cuts += cuts.retake_cuts(tr, retake_ids)
     excluded = set(retake_ids)
     if tr["segments"]:
@@ -127,12 +134,12 @@ def analyze(job: Job, cfg: dict, log: Log, progress: Prog) -> None:
         all_cuts = cuts.protect_words(all_cuts, tr, vad, cfg, audio)
         log(f"Word protection: kept {before - sum(c['e'] - c['s'] for c in all_cuts):.2f}s that would have clipped words")
     plan["cuts"] = cuts.finalize(all_cuts)
-    visuals = {"broll": [], "callouts": [], "keywords": [], "zoom_ids": []}
+    visuals = {"broll": [], "callouts": [], "keywords": [], "zoom_ids": [], "doodles": []}
     meta: dict = {}
     if segs:
         p(0.45, "Planning B-roll, callouts and zooms")
         visuals = planner.plan_visuals(segs, excluded, info["duration"])
-        if cfg.get("output_reel", True) and cfg.get("reel_mode", "highlight") == "highlight":
+        if cfg.get("output_reel", True) and cfg.get("reel_mode", "auto") in ("highlight", "auto"):
             p(0.7, "Picking the best Reel moment")
             plan["short"] = planner.pick_short(segs, excluded, float(cfg.get("reel_max_seconds", 90)))
         p(0.8, "Writing title, description, tags")
@@ -143,6 +150,18 @@ def analyze(job: Job, cfg: dict, log: Log, progress: Prog) -> None:
     plan["callouts"] = [{"s": by_id[c["segment_id"]]["s"], "e": by_id[c["segment_id"]]["s"] + 1.6,
                          "text": c["text"][:40], "enabled": True}
                         for c in visuals.get("callouts", []) if c["segment_id"] in by_id]
+    plan["doodles"], plan["outlines"] = [], []
+    if cfg.get("doodles", True) and segs:
+        from .doodles import build_doodles, build_outlines, heuristic_doodles
+        from .planner import DOODLE_EVERY
+        raw = visuals.get("doodles", [])
+        every = DOODLE_EVERY.get(cfg.get("doodle_density", "medium"), 16.0)
+        if len(raw) < max(1, info["duration"] / every / 3):  # LLM gave little: top up from keywords
+            raw = raw + [{**h, "_src": "auto"} for h in heuristic_doodles(segs, excluded, every)]
+        plan["doodles"] = build_doodles(raw, tr, info["duration"], excluded, cfg, cfg.get("_ai_doodles_ok", False))
+        if cfg.get("doodle_outline", True):
+            plan["outlines"] = build_outlines(plan["zooms"], info["duration"], cfg)
+        log(f"Doodles planned: {len(plan['doodles'])}, subject outlines: {len(plan['outlines'])}")
     plan["metadata"] = {
         "title": (meta.get("titles") or [""])[0], "titles": meta.get("titles", []),
         "description": meta.get("description", ""), "chapters": meta.get("chapters", []),
@@ -162,7 +181,11 @@ def analyze(job: Job, cfg: dict, log: Log, progress: Prog) -> None:
     # ---- b-roll
     p = st.sub("broll")
     slots = build_slots(visuals, tr, info["duration"], excluded) if cfg.get("broll_mode", "both") != "off" else []
-    plan["broll"] = BrollResolver(cfg, job.dir, log, planner).resolve(slots, on_progress=p)
+    plan["broll"] = BrollResolver(cfg, job.dir, log, planner).resolve(slots, on_progress=lambda x, m="": p(x * 0.9, m))
+    if any(d.get("shape") == "custom" for d in plan.get("doodles", [])):
+        from .doodles import generate_custom
+        p(0.9, "Drawing AI doodles (FLUX)")
+        generate_custom(plan["doodles"], log, lambda x: p(0.9 + 0.1 * x, "Drawing AI doodles"))
     job.save()
 
     # ---- thumbnails
@@ -224,6 +247,9 @@ def render_all(job: Job, cfg: dict, log: Log, progress: Prog) -> dict:
                 progress)
     plan["_filler_words"] = cfg.get("filler_words", []) if cfg.get("remove_fillers", True) else []
     keeps, pieces, tl, trk = _timeline(job, cfg)
+    if cfg.get("encoder", "auto") == "auto":
+        log("Encoder: NVIDIA NVENC (fast)" if ffmpeg.nvenc_works() else
+            f"Encoder: CPU x264 (NVENC not usable: {ffmpeg.NVENC_ERROR})")
     base = render.render_base(job.source, info, pieces, job.dir, cfg, st.sub("base"), log)
     base_info = ffmpeg.probe(base)
     words = _edit_words(job, tl, None)
@@ -243,50 +269,68 @@ def render_all(job: Job, cfg: dict, log: Log, progress: Prog) -> dict:
         if r:
             callouts.append({"s": r[0], "e": r[0] + 1.6, "text": c["text"]})
     kw = plan.get("keywords", []) if cfg.get("caption_keywords", True) else []
+    dd_all, ol_all = _visual_extras(job, cfg, tl, broll, base, base_info, log)
     outputs = {}
 
     if want_yt:
         W, H = render.output_dims(base_info, False, cfg)
+        lm = layout_mod.mode_for(False, base_info, W, H)
+        geo = layout_mod.geometry(lm, W, H, base_info)
+        by = _styled(broll, lm, cfg)
         ass = captions.write(job.path("captions_youtube.ass"),
                              captions.build_ass(words, callouts, W, H, cfg.get("caption_style", "bold_pop"), kw,
                                                 show_captions=cfg.get("captions", True),
                                                 cta=cfg.get("cta_youtube", ""), duration=tl.duration,
-                                                cards=_cards(broll, 0.0, tl.duration)))
+                                                cards=_cards(by, 0.0, tl.duration, geo, lm, W, H),
+                                                regions=layout_mod.caption_regions(by, lm, geo, 0.0, tl.duration)))
         outputs["youtube"] = str(render.render_final(
             job.dir, base, base_info, job.path("youtube.mp4"), vertical=False, t0=0, t1=tl.duration,
-            broll=broll, ass_file=ass.name, cfg=cfg, pieces=pieces, face_track=trk, layout="",
+            broll=by, ass_file=ass.name, cfg=cfg, pieces=pieces, face_track=trk, layout="",
             on_progress=st.sub("youtube"), log=log,
-            sfx_events=sound_events(broll, callouts, pieces, 0.0, tl.duration, False, bool(cfg.get("cta_youtube")))))
+            sfx_events=sound_events(by, callouts, pieces, 0.0, tl.duration, False, bool(cfg.get("cta_youtube"))),
+            doodles=_window(dd_all, 0.0, tl.duration) + _callout_doodles(callouts, cfg) +
+            _split_doodles(by, 0.0, tl.duration, geo, lm, W, H, cfg),
+            outlines=_window(ol_all, 0.0, tl.duration), src_info=info, busy=callouts))
 
     if want_reel:
         t0, t1, hook = 0.0, tl.duration, ""
         sh = plan.get("short")
         tr = job.load_json("transcript.json", {"segments": []})
         by_id = {s["id"]: s for s in tr["segments"]}
-        if cfg.get("reel_mode", "highlight") == "highlight" and sh and sh.get("start_id") in by_id:
+        mode = cfg.get("reel_mode", "auto")
+        if mode == "auto":  # Instagram takes Reels up to 3 min: keep everything when it fits
+            mode = "full" if tl.duration <= float(cfg.get("reel_full_max", 180)) else "highlight"
+            log(f"Reel: {'full video' if mode == 'full' else 'best highlight'} ({tl.duration:.0f}s edit)")
+        if mode == "highlight" and sh and sh.get("start_id") in by_id:
             a = tl.to_edit(by_id[sh["start_id"]]["s"], "next")
             b = tl.to_edit(by_id[sh.get("end_id", sh["start_id"])]["e"], "prev")
             if a is not None and b is not None and b - a > 5:
                 t0, t1, hook = max(0.0, a - 0.05), min(tl.duration, b + 0.3), sh.get("hook", "")
-        max_len = float(cfg.get("reel_max_seconds", 90)) if cfg.get("reel_mode") == "highlight" else 900.0
+        max_len = float(cfg.get("reel_max_seconds", 90)) if mode == "highlight" else 900.0
         t1 = min(t1, t0 + max_len)
         rw = [{"w": w["w"], "s": w["s"] - t0, "e": w["e"] - t0} for w in words if t0 <= w["s"] < t1]
         hook_end = t0 + (2.8 if hook else 0.0)  # don't stack a callout on top of the opening hook
         rc = [{**c, "s": c["s"] - t0, "e": c["e"] - t0} for c in callouts if hook_end <= c["s"] < t1 - 1]
+        lm = layout_mod.mode_for(True, base_info, 1080, 1920)
+        geo = layout_mod.geometry(lm, 1080, 1920, base_info)
+        by = _styled(broll, lm, cfg)
         ass = captions.write(job.path("captions_reel.ass"),
                              captions.build_ass(rw, rc, 1080, 1920, cfg.get("caption_style", "bold_pop"), kw, hook=hook,
                                                 show_captions=cfg.get("captions", True),
                                                 cta=cfg.get("cta_reel", ""), duration=t1 - t0,
-                                                cards=_cards(broll, t0, t1)))
+                                                cards=_cards(by, t0, t1, geo, lm, 1080, 1920)))
         layout = cfg.get("vertical_layout", "face")
         if layout == "face" and plan.get("face_ratio", 0) < 0.3:
             layout = "blur"  # screen recordings / no face: letterbox on blurred background
         outputs["reel"] = str(render.render_final(
-            job.dir, base, base_info, job.path("reel.mp4"), vertical=True, t0=t0, t1=t1, broll=broll,
+            job.dir, base, base_info, job.path("reel.mp4"), vertical=True, t0=t0, t1=t1, broll=by,
             ass_file=ass.name, cfg=cfg, pieces=pieces, face_track=trk, layout=layout,
             on_progress=st.sub("reel"), log=log,
-            sfx_events=sound_events(broll, [c for c in callouts if c["s"] >= hook_end], pieces, t0, t1, bool(hook),
-                                    bool(cfg.get("cta_reel")))))
+            sfx_events=sound_events(by, [c for c in callouts if c["s"] >= hook_end], pieces, t0, t1, bool(hook),
+                                    bool(cfg.get("cta_reel"))),
+            doodles=[d for d in _window(dd_all, t0, t1) if d["s"] >= (2.9 if hook else 0.0)] + _callout_doodles(rc, cfg) +
+            _split_doodles(by, t0, t1, geo, lm, 1080, 1920, cfg),
+            outlines=_window(ol_all, t0, t1), src_info=info, busy=rc))
         plan["reel_range"] = [t0, t1]
 
     p = st.sub("export")
@@ -302,11 +346,116 @@ def render_all(job: Job, cfg: dict, log: Log, progress: Prog) -> dict:
     return outputs
 
 
-def _cards(broll: list[dict], t0: float, t1: float) -> list[dict]:
+def _visual_extras(job: Job, cfg: dict, tl: Timeline, broll: list[dict], base: Path, base_info: dict, log: Log):
+    """Doodles + subject outlines mapped to EDIT time; outline frames are rendered once (shared by all outputs)."""
+    plan = job.plan
+    if not cfg.get("doodles", True):
+        return [], []
+    cover = [(b["t0"] - 0.15, b["t1"] + 0.15) for b in broll]
+
+    def free(a: float, b: float) -> bool:  # B-roll covers the face -> nothing to draw around
+        return all(b <= c0 or a >= c1 for c0, c1 in cover)
+
+    dd = []
+    for d in plan.get("doodles", []):
+        if not d.get("enabled", True):
+            continue
+        a = tl.to_edit(d["s"], "next")
+        if a is None or a > tl.duration - 1.0:
+            continue
+        r = (a, min(tl.duration, a + max(1.2, min(2.2, d["e"] - d["s"]))))
+        if not free(*r) or (dd and r[0] < dd[-1]["e"] + 1.0):  # cuts squeeze time: keep doodles apart
+            continue
+        dd.append({**d, "s": r[0], "e": r[1]})
+    ol = []
+    if cfg.get("doodle_outline", True) and plan.get("outlines"):
+        from .doodles import render_outline_frames
+        for o in plan["outlines"]:
+            if not o.get("enabled", True):
+                continue
+            a = tl.to_edit(o["s"], "next")
+            if a is None or a > tl.duration - 1.0:
+                continue
+            r = (a, min(tl.duration, a + max(1.2, min(2.4, o["e"] - o["s"]))))
+            if not free(*r):
+                continue
+            rel = f"outlines/o{o['id']:03d}"
+            try:
+                n = render_outline_frames(base, r[0], r[1] - r[0], base_info["width"], base_info["height"],
+                                          job.dir / rel, log)
+            except Exception as e:  # noqa: BLE001
+                log(f"Subject outline skipped: {e}")
+                break
+            if n:
+                ol.append({"s": r[0], "e": r[0] + n / 10.0, "dir": rel, "frames": n})
+        if ol:
+            log(f"Subject outlines: {len(ol)}")
+    return dd, ol
+
+
+def _window(items: list[dict], t0: float, t1: float) -> list[dict]:
+    return [{**x, "s": x["s"] - t0, "e": x["e"] - t0} for x in items if t0 <= x["s"] and x["e"] <= t1 + 0.01]
+
+
+def _callout_doodles(callouts: list[dict], cfg: dict) -> list[dict]:
+    """A marker underline / circle drawn on the pop-up callouts (alternating)."""
+    if not cfg.get("doodles", True) or not cfg.get("callout_doodles", True):
+        return []
+    out = []
+    for i, c in enumerate(callouts):
+        out.append({"id": 500 + i, "s": c["s"] + 0.22, "e": c["e"], "shape": "underline" if i % 2 == 0 else "circle_text",
+                    "color": "yellow", "callout_text": c["text"], "sound": "", "kind": "callout"})
+    return out
+
+
+def _styled(broll: list[dict], lm: str, cfg: dict) -> list[dict]:
+    by = [dict(b) for b in broll]
+    layout_mod.assign_styles(by, lm, cfg)
+    return by
+
+
+def _cards(broll: list[dict], t0: float, t1: float, geo: dict | None = None, lm: str = "", W: int = 0,
+           H: int = 0) -> list[dict]:
     out = []
     for b in broll:
         if b.get("kind") == "graphic" and t0 <= b["t0"] < t1 and b["t1"] - b["t0"] >= 0.8:
-            out.append({"s": b["t0"] - t0, "e": min(b["t1"], t1) - t0, "text": b.get("card_text", "")})
+            c = {"s": b["t0"] - t0, "e": min(b["t1"], t1) - t0, "text": b.get("card_text", "")}
+            if b.get("style") == "split" and geo:
+                if lm == "pip":
+                    c.update(pos=(W // 2, int(H * 0.22)), size=int(W * 0.12))
+                else:  # text sits in the lower part of the panel, a doodle draws above it
+                    px, py, pw, ph = geo["panel"]
+                    c.update(pos=(px + pw // 2, py + int(ph * 0.70)), size=int(min(pw * 0.1, ph * 0.16)))
+            out.append(c)
+    return out
+
+
+def _split_doodles(broll: list[dict], t0: float, t1: float, geo: dict, lm: str, W: int, H: int, cfg: dict) -> list[dict]:
+    """Split moments get their own doodles: a big icon on keyword cards, a hand-drawn arrow pointing at footage."""
+    if not cfg.get("doodles", True):
+        return []
+    from . import doodle_shapes as ds
+    from .doodles import HEURISTIC
+    out = []
+    for i, b in enumerate(broll):
+        if b.get("style") != "split" or not (t0 <= b["t0"] < t1) or b["t1"] - b["t0"] < 1.4:
+            continue
+        s, e = b["t0"] - t0 + 0.35, min(b["t1"], t1) - t0 - 0.25
+        if lm == "pip":
+            continue
+        px, py, pw, ph = geo["panel"]
+        if b.get("kind") == "graphic":
+            words = set(cuts.norm(f"{b.get('card_text', '')} {b.get('line', '')}").split())
+            kind = next((k for k, ws in HEURISTIC if words & set(ws.split())), "amazing")
+            shape, _, color, sound = ds.KINDS[kind]
+            sz = int(min(pw, ph) * 0.62)
+            out.append({"id": 700 + i, "s": s, "e": e, "shape": shape, "color": color, "sound": "",
+                        "kind": kind, "box": (px + (pw - sz) // 2, py + int(ph * 0.02), sz, sz)})
+        else:
+            aw = int(W * 0.13)
+            out.append({"id": 800 + i, "s": s, "e": min(e, s + 2.2), "shape": "arrow_me", "color": "yellow",
+                        "sound": "", "kind": "point", "flip": True,
+                        "box": (px - int(aw * 0.55), max(0, py - int(aw * 0.30)), aw, int(aw / 1.3))})
     return out
 
 
@@ -317,6 +466,8 @@ def sound_events(broll: list[dict], callouts: list[dict], pieces: list[dict], t0
     for b in broll:
         if t0 <= b["t0"] < t1:
             ev.append((b["t0"] - t0, "whoosh", 0.0))
+            if b.get("style") == "split" and b["t1"] <= t1:  # and a softer one as you glide back
+                ev.append((b["t1"] - t0 - 0.35, "whoosh", -8.0))
     for c in callouts:
         if t0 <= c["s"] < t1:
             ev.append((c["s"] - t0, "pop", -3.0))
@@ -367,7 +518,7 @@ def youtube_description(plan: dict) -> str:
     if m.get("chapters_text"):
         parts.append("Chapters:\n" + m["chapters_text"])
     credits = sorted({f"{s['source'].title()} - {s.get('credit') or 'stock'}" for s in plan.get("broll", [])
-                      if s.get("status") == "resolved" and s.get("source") in ("pexels", "pixabay")})
+                      if s.get("status") == "resolved" and s.get("source") in ("pexels", "pixabay", "openverse")})
     if credits:
         parts.append("Stock footage: " + ", ".join(credits))
     tags = m.get("hashtags", [])[:3]
@@ -387,7 +538,13 @@ def instagram_caption(plan: dict) -> str:
 def export(job: Job, cfg: dict) -> Path:
     plan = job.plan
     src = job.source
-    base_dir = Path(cfg["output_dir"]) if cfg.get("output_dir") else src.parent
+    from ..core.paths import DATA
+    if cfg.get("output_dir"):
+        base_dir = Path(cfg["output_dir"])
+    elif (DATA / "uploads") in src.parents:  # sent from the phone: put results somewhere you'll find them
+        base_dir = Path.home() / "Videos" / "OnDaGo"
+    else:
+        base_dir = src.parent
     out = base_dir / f"{src.stem}_OnDaGo"
     out.mkdir(parents=True, exist_ok=True)
     for k, v in plan.get("outputs", {}).items():

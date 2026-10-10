@@ -66,12 +66,53 @@ def riser(length: float = 0.9) -> np.ndarray:
     return np.stack([y, y], axis=1) / (np.abs(y).max() + 1e-9)
 
 
+def scribble(length: float = 0.42) -> np.ndarray:
+    """Marker-on-paper scratch: band-limited noise with a fast, irregular stroke rhythm."""
+    n = int(length * SR)
+    t = np.arange(n) / SR
+    noise = _rng.standard_normal(n).astype(np.float32)
+    hp = noise - _onepole_sweep(noise, 1800, 1800)          # remove the low rumble
+    band = _onepole_sweep(hp, 7000, 5000)
+    rate = 14 + 6 * np.sin(2 * np.pi * 1.3 * t)
+    strokes = 0.35 + 0.65 * np.clip(np.sin(2 * np.pi * np.cumsum(rate) / SR), 0, 1) ** 0.7
+    y = band * strokes * _env(n, 0.08, 0.3)
+    y = y.astype(np.float32)
+    return np.stack([y * 0.9, y], axis=1) / (np.abs(y).max() + 1e-9)
+
+
+def ding(length: float = 0.9) -> np.ndarray:
+    """Bright 'idea' bell."""
+    n = int(length * SR)
+    t = np.arange(n) / SR
+    y = np.zeros(n, np.float32)
+    for f, a, d in ((1568, 1.0, 5.0), (2349, 0.55, 6.5), (3136, 0.35, 8.0), (4699, 0.18, 11.0)):
+        y += (a * np.sin(2 * np.pi * f * t) * np.exp(-t * d)).astype(np.float32)
+    y[: int(0.003 * SR)] *= np.linspace(0, 1, int(0.003 * SR))
+    return np.stack([y, y], axis=1) / (np.abs(y).max() + 1e-9)
+
+
+def sparkle(length: float = 0.7) -> np.ndarray:
+    """Quick rising chime glissando (stars, hearts, crowns)."""
+    n = int(length * SR)
+    y = np.zeros(n, np.float32)
+    notes = [2093, 2637, 3136, 3951, 4186]
+    for i, f in enumerate(notes):
+        st = int(i * 0.055 * SR)
+        m = n - st
+        tt = np.arange(m) / SR
+        y[st:] += (0.6 * np.sin(2 * np.pi * f * tt) * np.exp(-tt * 9)).astype(np.float32)
+    pan = np.linspace(-0.4, 0.4, n)
+    st = np.stack([y * (1 - pan), y * (1 + pan)], axis=1)
+    return st / (np.abs(st).max() + 1e-9)
+
+
 _CACHE: dict[str, np.ndarray] = {}
 
 
 def sound(name: str) -> np.ndarray:
     if name not in _CACHE:
-        _CACHE[name] = {"whoosh": whoosh, "pop": pop, "riser": riser}[name]()
+        _CACHE[name] = {"whoosh": whoosh, "pop": pop, "riser": riser, "scribble": scribble, "ding": ding,
+                        "sparkle": sparkle}.get(name, pop)()
     return _CACHE[name]
 
 
@@ -81,7 +122,7 @@ def build_track(events: list[tuple[float, str, float]], duration: float, out: Pa
         return None
     n = int(duration * SR) + SR
     mix = np.zeros((n, 2), np.float32)
-    peak_offset = {"whoosh": 0.30, "pop": 0.0, "riser": 0.85}
+    peak_offset = {"whoosh": 0.30, "pop": 0.0, "riser": 0.85, "scribble": 0.0, "ding": 0.0, "sparkle": 0.0}
     for t, name, gain_db in events:
         s = sound(name) * (10 ** ((gain_db - 6.0) / 20))  # -6 dB headroom
         start = int(max(0.0, t - peak_offset.get(name, 0.0)) * SR)

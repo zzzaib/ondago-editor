@@ -1,0 +1,15 @@
+{
+  "name": "OnDaGo Editor",
+  "short_name": "OnDaGo",
+  "description": "Edit your videos from your phone - your laptop does the work.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#14141C",
+  "theme_color": "#14141C",
+  "icons": [
+    {"src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png"},
+    {"src": "/static/icon-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ]
+}
