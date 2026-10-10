@@ -1010,10 +1010,8 @@ def _after_task(job: Job, label: str, t: TaskInfo, cfg: dict):
 
 def _gpu_name() -> str:
     try:
-        import subprocess
-        out = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], capture_output=True,
-                             text=True, timeout=5, creationflags=net.CREATE_NO_WINDOW)
-        return out.stdout.strip().splitlines()[0] if out.returncode == 0 and out.stdout.strip() else ""
+        from ..core.gpu import gpu_names
+        return " + ".join(gpu_names())
     except Exception:  # noqa: BLE001
         return ""
 

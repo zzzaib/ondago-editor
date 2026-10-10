@@ -95,7 +95,23 @@ if ($smi) {
     }
     Ok "PyTorch build: $cuTag"
 } else {
-    Warn "No NVIDIA GPU detected - the app will run on CPU (much slower)."
+    $cards = @()
+    try { $cards = @(Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name } | Where-Object { $_ -and $_ -notmatch "Basic Display|Virtual" }) } catch { }
+    $amd = $cards | Where-Object { $_ -match "AMD|Radeon" } | Select-Object -First 1
+    $intel = $cards | Where-Object { $_ -match "Intel" } | Select-Object -First 1
+    if ($amd -or $intel) {
+        $name = if ($amd) { $amd } else { $intel }
+        Ok "GPU: $name"
+        $enc = if ($amd) { "AMD AMF" } else { "Intel Quick Sync" }
+        Ok "Video rendering will use $enc (GPU). The editor AI (Ollama) can use this GPU too."
+        Warn "Speech recognition runs on the CPU (it needs NVIDIA CUDA), so transcribing takes a bit longer."
+        if (-not $Lite) {
+            $Lite = $true
+            Warn "Skipping the AI image model: it needs an NVIDIA RTX GPU. Thumbnails use blurred/gradient backgrounds."
+        }
+    } else {
+        Warn "No GPU detected - the app will run on CPU (much slower)."
+    }
 }
 
 # ------------------------------------------------------------------ uv + python
@@ -145,7 +161,7 @@ if ($LASTEXITCODE -ne 0) { throw "Library install failed." }
 Ok "libraries installed"
 
 # ------------------------------------------------------------------ ffmpeg
-Say "FFmpeg (with NVENC + libass)"
+Say "FFmpeg (GPU encoding for NVIDIA / AMD / Intel + libass)"
 $FfBin = Join-Path $Tools "ffmpeg\bin"
 if (-not (Test-Path (Join-Path $FfBin "ffmpeg.exe"))) {
     $zip = Join-Path $Tools "ffmpeg.zip"

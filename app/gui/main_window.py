@@ -118,8 +118,9 @@ class SettingsTab(QScrollArea):
         f.addRow("", QLabel("Empty = a '<video>_OnDaGo' folder next to your raw video"))
         f.addRow("YouTube shape", cmb("youtube_format", [("Always 16:9 (vertical videos get blurred sides)", "landscape"),
                                                          ("Keep the recording's shape", "keep")]))
-        f.addRow("Video encoder", cmb("encoder", [("Auto (NVIDIA NVENC if available)", "auto"), ("NVENC", "nvenc"),
-                                                 ("CPU x264", "x264")]))
+        f.addRow("Video encoder", cmb("encoder", [("Auto (uses your GPU if it can)", "auto"), ("NVIDIA NVENC", "nvenc"),
+                                                 ("AMD AMF (Radeon)", "amf"), ("Intel Quick Sync", "qsv"),
+                                                 ("CPU x264 (slowest)", "x264")]))
         lay.addWidget(g)
 
         g = QGroupBox("AI models")
@@ -150,10 +151,11 @@ class SettingsTab(QScrollArea):
                                                  ("High (every ~12 s)", "high")]))
         f.addRow("", chk("broll_verify", "Double-check matches with the vision model"))
         f.addRow("Library match strictness", num("broll_library_threshold", 0.001, 0.9, 0.01, 3))
-        f.addRow("Pexels API key (free)", line("pexels_key", "pexels.com/api", True))
-        f.addRow("Pixabay API key (free)", line("pixabay_key", "pixabay.com/api/docs", True))
-        links = QLabel('<a style="color:#B8A8FF" href="https://www.pexels.com/api/">Get Pexels key</a> &nbsp; '
-                       '<a style="color:#B8A8FF" href="https://pixabay.com/api/docs/">Get Pixabay key</a>')
+        f.addRow("Pixabay API key (free)", line("pixabay_key", "pixabay.com/api/docs - log in, the key is on that page", True))
+        f.addRow("Pexels API key (optional)", line("pexels_key", "only if you already have one", True))
+        links = QLabel('<a style="color:#B8A8FF" href="https://pixabay.com/api/docs/">Get a free Pixabay key</a> '
+                       '&nbsp;·&nbsp; Pexels has paused new keys, but an existing one still works.')
+        links.setObjectName("muted")
         links.setOpenExternalLinks(True)
         f.addRow("", links)
         lay.addWidget(g)

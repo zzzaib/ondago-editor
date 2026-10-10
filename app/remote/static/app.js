@@ -754,16 +754,16 @@ function viewSettings() {
       h("div", { class: "kv" }, h("span", {}, "AI images & doodles"), h("span", {}, st.ai_images ? "Available" : (st.ai_reason || "Not available"))),
       h("div", { class: "kv" }, h("span", {}, "YouTube"), h("span", {}, st.youtube_connected ? "Connected" : "Connect on laptop")),
       h("div", { class: "kv" }, h("span", {}, "Instagram"), h("span", {}, st.instagram_ready ? "Ready" : "Set up on laptop")),
-      h("div", { class: "kv" }, h("span", {}, "Online B-roll"), h("span", {}, st.video_keys ? "Video clips (Pexels/Pixabay)" : "Free photos - add a Pexels key for video")),
+      h("div", { class: "kv" }, h("span", {}, "Online B-roll"), h("span", {}, st.video_keys ? "Video clips (Pixabay/Pexels)" : "Free photos - add a Pixabay key for video")),
       h("div", { class: "kv" }, h("span", {}, "Version"), h("span", {}, st.version || ""))),
     h("h2", {}, "Stock video for B-roll"),
     (() => {
-      const k = h("input", { type: "password", placeholder: st.video_keys ? "Key saved - paste a new one to replace" : "Paste your free Pexels API key" });
+      const k = h("input", { type: "password", placeholder: st.video_keys ? "Key saved - paste a new one to replace" : "Paste your free Pixabay API key" });
       return h("div", { class: "card" },
-        h("p", { class: "small muted", style: "margin-top:0" }, "Free key, takes a minute: ", h("a", { href: "https://www.pexels.com/api/", target: "_blank", rel: "noopener" }, "pexels.com/api"), " → sign up → copy the key. Then OnDaGo picks real video clips for you automatically."),
+        h("p", { class: "small muted", style: "margin-top:0" }, "Free key, takes a minute: sign up at ", h("a", { href: "https://pixabay.com/api/docs/", target: "_blank", rel: "noopener" }, "pixabay.com/api/docs"), ", log in, and your key is shown on that page. Then OnDaGo picks real video clips for you automatically."),
         k, h("button", { class: "btn", style: "margin-top:10px", onclick: async () => {
           if (!k.value.trim()) return;
-          try { await api("PUT", "/api/keys", { pexels_key: k.value.trim() }); k.value = ""; toast("Pexels key saved"); await loadStatus(); $("#app").replaceChildren(viewSettings()); }
+          try { await api("PUT", "/api/keys", { pixabay_key: k.value.trim() }); k.value = ""; toast("Pixabay key saved"); await loadStatus(); $("#app").replaceChildren(viewSettings()); }
           catch (e) { toast(e.message, true); } } }, "Save key"));
     })(),
     h("h2", {}, "Ways to reach your laptop"),

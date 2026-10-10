@@ -185,8 +185,8 @@ def main():
     except Exception as e:  # noqa: BLE001
         failures.append(f"torch: {e}")
     try:
-        from app.core.ffmpeg import nvenc_works
-        ok(f"FFmpeg NVENC hardware encoding: {nvenc_works()}")
+        from app.core.ffmpeg import encoder_summary
+        ok(f"FFmpeg video encoder: {encoder_summary('auto')}")
     except Exception as e:  # noqa: BLE001
         failures.append(f"ffmpeg: {e}")
 

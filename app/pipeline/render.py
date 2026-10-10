@@ -21,6 +21,41 @@ from .face import center_in
 Progress = Callable[[float, str], None]
 
 
+def clean_still(path: str, folder: Path, max_side: int) -> str:
+    """Re-save a B-roll photo as a plain, clean JPEG. Downloaded 'photos' are sometimes WebP with a .jpg name or
+    carry broken EXIF; looped for every frame, the decoder then prints an error per frame, which used to fill
+    FFmpeg's error pipe and freeze the render. Also pre-sizes it, so the per-frame scaling is cheap."""
+    import hashlib
+
+    from PIL import Image, ImageOps
+    src = Path(path)
+    try:
+        st = src.stat()
+        key = hashlib.md5(f"{src.resolve()}|{st.st_size}|{st.st_mtime_ns}|{max_side}".encode()).hexdigest()[:16]
+        out = folder / f"still_{key}.jpg"
+        if out.exists():
+            return str(out)
+        folder.mkdir(parents=True, exist_ok=True)
+        with Image.open(src) as im:
+            im = ImageOps.exif_transpose(im)
+            if im.mode in ("RGBA", "LA", "P"):
+                im = im.convert("RGBA")
+                bg = Image.new("RGB", im.size, (16, 16, 24))
+                bg.paste(im, mask=im.getchannel("A"))
+                im = bg
+            else:
+                im = im.convert("RGB")
+            k = max_side / max(im.size)
+            if k < 1:
+                im = im.resize((max(2, round(im.width * k)), max(2, round(im.height * k))), Image.LANCZOS)
+            tmp = out.with_suffix(".part.jpg")
+            im.save(tmp, "JPEG", quality=93, subsampling=0)
+            tmp.replace(out)
+        return str(out)
+    except Exception:  # noqa: BLE001  (unreadable by PIL: let FFmpeg try the original)
+        return str(path)
+
+
 def canvas_for(info: dict) -> tuple[int, int]:
     w, h = info["width"], info["height"]
     if w >= h:
@@ -123,7 +158,7 @@ def render_base(src: Path, info: dict, pieces: list[dict], job_dir: Path, cfg: d
         on_progress(done[0] / len(pieces), f"Cutting {done[0]}/{len(pieces)}")
         return out
 
-    workers = 3 if "nvenc" in " ".join(vcodec) else 2
+    workers = 3 if ffmpeg.pick_encoder(cfg.get("encoder", "auto")) != "x264" else 2
     with ThreadPoolExecutor(workers) as ex:
         outs = list(ex.map(one, enumerate(pieces)))
     lst = job_dir / "concat.txt"
@@ -368,7 +403,8 @@ def render_final(job_dir: Path, base: Path, base_info: dict, out: Path, *, verti
             src = (f"gradients=s={pw}x{ph}:c0=0x140C2E:c1=0x6A3DFF:c2=0xFF3D7F:nb_colors=3:speed=0.03:"
                    f"d={bd:.3f}:r={fps:.3f},vignette=PI/4")
         elif b["kind"] == "image":
-            inputs += ["-loop", "1", "-framerate", f"{fps:.3f}", "-t", f"{bd:.3f}", "-i", b["file"]]
+            still = clean_still(b["file"], job_dir / "stills", max(int(pw * 1.12), int(ph * 1.12)))
+            inputs += ["-loop", "1", "-framerate", f"{fps:.3f}", "-t", f"{bd:.3f}", "-i", still]
             src = (f"[{idx}:v]scale={int(pw * 1.12)}:{int(ph * 1.12)}:force_original_aspect_ratio=increase,"
                    f"crop={pw}:{ph}:x='(iw-ow)*t/{bd:.3f}':y='(ih-oh)/2'")
             idx += 1

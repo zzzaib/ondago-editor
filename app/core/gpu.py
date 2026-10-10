@@ -60,11 +60,51 @@ def bf16_ok() -> bool:
     return has_cuda() and cap is not None and cap >= (8, 0)
 
 
+@lru_cache(maxsize=1)
+def gpu_names() -> tuple[str, ...]:
+    """Names of the graphics cards (NVIDIA via nvidia-smi, anything else - AMD / Intel - via Windows)."""
+    import subprocess
+    import sys
+    flags = 0x08000000 if sys.platform == "win32" else 0
+    names: list[str] = []
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], capture_output=True,
+                             text=True, timeout=5, creationflags=flags)
+        if out.returncode == 0:
+            names += [x.strip() for x in out.stdout.splitlines() if x.strip()]
+    except Exception:  # noqa: BLE001
+        pass
+    if sys.platform == "win32":
+        try:
+            out = subprocess.run(["powershell", "-NoProfile", "-Command",
+                                  "(Get-CimInstance Win32_VideoController).Name"], capture_output=True, text=True,
+                                 timeout=10, creationflags=flags)
+            for x in out.stdout.splitlines():
+                x = x.strip()
+                if x and x not in names and "basic display" not in x.lower() and "virtual" not in x.lower():
+                    names.append(x)
+        except Exception:  # noqa: BLE001
+            pass
+    return tuple(names)
+
+
+def vendor() -> str:
+    """'nvidia' / 'amd' / 'intel' / '' - the best graphics card in this PC."""
+    low = " | ".join(gpu_names()).lower()
+    for v, keys in (("nvidia", ("nvidia", "geforce", "rtx", "quadro")), ("amd", ("amd", "radeon")),
+                    ("intel", ("intel",))):
+        if any(k in low for k in keys):
+            return v
+    return ""
+
+
 def ai_images_ok() -> tuple[bool, str]:
     """FLUX.2 klein on this machine? Needs an RTX-class GPU (Turing 7.5+); Pascal would take many minutes per image."""
     cap = capability()
     if not has_cuda():
-        return False, "no usable CUDA GPU for PyTorch"
+        if vendor() in ("amd", "intel"):
+            return False, "AI images need an NVIDIA RTX GPU (AMD / Intel GPUs can't run this model yet)"
+        return False, "no usable NVIDIA GPU for PyTorch (AI images need an RTX card)"
     if cap is not None and cap < (7, 5):
         return False, f"GPU compute capability {cap[0]}.{cap[1]} is too old for AI image generation (needs RTX 20xx or newer)"
     return True, ""

@@ -74,8 +74,8 @@ class BrollResolver:
             Path(self.cfg["broll_library"]).exists()
         use_online = self.mode in ("online", "both") and online.available(self.cfg)
         if self.mode in ("online", "both") and not online.has_video_keys(self.cfg):
-            self.log("No Pexels/Pixabay key yet - using free openly-licensed photos. Add a free Pexels key in "
-                     "Settings for real video clips.")
+            self.log("No Pixabay/Pexels key yet - using free openly-licensed photos. Add a free Pixabay key in "
+                     "Settings for real video clips (pixabay.com/api/docs).")
 
         # 1) local library (GPU: SigLIP, small)
         if use_lib:

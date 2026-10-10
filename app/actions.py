@@ -54,7 +54,7 @@ def render(job: Job, cfg: dict, log, progress) -> str:
 def search_slot(job: Job, cfg: dict, slot_id: int, query: str, log, progress) -> int:
     slot = next(s for s in job.plan["broll"] if s["id"] == slot_id)
     if not online.available(cfg):
-        raise RuntimeError("Add a free Pexels or Pixabay API key in Settings to search online.")
+        raise RuntimeError("Add a free Pixabay API key in Settings to search online video (pixabay.com/api/docs).")
     progress(0.1, f"Searching '{query}'")
     found = online.search([query], cfg, min_dur=slot["e"] - slot["s"], log=log, per_query=6)
     pdir = job.dir / "broll_previews"

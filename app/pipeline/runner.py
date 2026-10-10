@@ -247,9 +247,7 @@ def render_all(job: Job, cfg: dict, log: Log, progress: Prog) -> dict:
                 progress)
     plan["_filler_words"] = cfg.get("filler_words", []) if cfg.get("remove_fillers", True) else []
     keeps, pieces, tl, trk = _timeline(job, cfg)
-    if cfg.get("encoder", "auto") == "auto":
-        log("Encoder: NVIDIA NVENC (fast)" if ffmpeg.nvenc_works() else
-            f"Encoder: CPU x264 (NVENC not usable: {ffmpeg.NVENC_ERROR})")
+    log("Encoder: " + ffmpeg.encoder_summary(cfg.get("encoder", "auto")))
     base = render.render_base(job.source, info, pieces, job.dir, cfg, st.sub("base"), log)
     base_info = ffmpeg.probe(base)
     words = _edit_words(job, tl, None)
