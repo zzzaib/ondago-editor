@@ -2,11 +2,11 @@
 
 **Offline AI video editor for YouTube & Instagram Reels. Raw recording in, finished edit out, on your own GPU.**
 
-OnDaGo Editor is a one-click Windows desktop app. It cuts silences, filler words and retakes, adds animated captions (English or **Hinglish**), B-roll, **hand-drawn animated doodles**, zooms, sound effects, thumbnails, titles and descriptions. It exports a 16:9 YouTube video and a 9:16 Reel, and can upload both. All the AI runs **locally on your own NVIDIA GPU**. It's free, with no subscriptions and no cloud processing.
+OnDaGo Editor is a one-click desktop app for **Windows and macOS** (Apple Silicon M1/M2/M3/M4 and Intel Macs). It cuts silences, filler words and retakes, adds animated captions (English or **Hinglish**), B-roll, **hand-drawn animated doodles**, zooms, sound effects, thumbnails, titles and descriptions. It exports a 16:9 YouTube video and a 9:16 Reel, and can upload both. All the AI runs **locally on your own computer** (NVIDIA GPU on Windows, Apple Silicon on Mac). It's free, with no subscriptions and no cloud processing.
 
 **New in v2:** leave the laptop on and **edit from your phone** (Android, iPhone or any browser) from anywhere, no static IP needed, plus **animated doodles** that draw themselves next to you.
 
-![platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-blue)
+![platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20%7C%20macOS%2012%2B-blue)
 ![gpu](https://img.shields.io/badge/GPU-NVIDIA%208%20GB-76b900)
 ![offline](https://img.shields.io/badge/AI-100%25%20local-purple)
 
@@ -137,6 +137,37 @@ install.bat -Lite                 # skip the 16 GB image model (AI images off)
 install.bat -Llm qwen3.5:4b       # smaller editor model for 6 GB GPUs
 ```
 
+### Install on a Mac (Apple Silicon or Intel)
+
+Needs **macOS 12 Monterey or newer** and about **25 GB** free space. 16 GB memory or more is recommended (8 GB Macs get the smaller editor model automatically).
+
+1. **Get the folder:** download the ZIP from GitHub (green **Code** button → *Download ZIP*) and unzip it to e.g. `~/OnDaGo`, or clone it:
+   ```bash
+   git clone https://github.com/zzzaib/ondago-editor.git ~/OnDaGo
+   ```
+2. **Open Terminal** and run the installer:
+   ```bash
+   cd ~/OnDaGo
+   bash install.command
+   ```
+   (Double-clicking `install.command` also works. If macOS says it's from an unidentified developer, right-click it → **Open** → **Open**.)
+3. **Launch** *OnDaGo Editor* from your Desktop, Launchpad or `~/Applications`, or run `bash run.command`.
+4. The first time the phone app is turned on, macOS asks whether OnDaGo may accept incoming connections: click **Allow**.
+
+| | Apple Silicon (M1, M2, M3, M4…) | Intel Mac |
+|---|---|---|
+| Video rendering | Apple VideoToolbox (hardware, fast) | Apple VideoToolbox (hardware) |
+| Speech to text (Whisper) | CPU, all cores | CPU (slower) |
+| Editor AI (Ollama) | Apple GPU (Metal) | CPU (slow; use `--llm qwen3.5:4b`) |
+| B-roll library search | Apple GPU (Metal) | CPU |
+| Doodles, captions, split-screen, phone app | ✓ | ✓ |
+| AI-generated images (FLUX) | not available (needs an NVIDIA RTX GPU) | not available |
+
+Mac install options:
+```bash
+bash install.command --llm qwen3.5:4b    # smaller editor model (8 GB Macs, Intel Macs)
+```
+
 ---
 
 ## Quick start
@@ -221,7 +252,8 @@ Only one large model sits in VRAM at a time; each is unloaded before the next lo
 ## Folder layout
 
 ```
-install.bat / run.bat      start here
+install.bat / run.bat      start here (Windows)
+install.command / run.command   start here (macOS)
 app/                       source (pipeline, GUI, phone app, uploaders)
 installer/                 bootstrap.ps1 + model downloader
 config/                    default settings

@@ -1,6 +1,8 @@
 """Speech-to-text with word timestamps (faster-whisper) + Silero VAD speech map."""
 from __future__ import annotations
 
+import os
+
 from pathlib import Path
 from typing import Callable
 
@@ -92,8 +94,9 @@ def load_whisper(model_name: str, compute_type: str, log=None, path: str | None 
     errors = []
     for dev, ct in _candidates(compute_type, log):
         try:
+            extra = {"cpu_threads": max(1, (os.cpu_count() or 4) - 1)} if dev == "cpu" else {}
             m = WhisperModel(path or whisper_model_path(model_name), device=dev, compute_type=ct,
-                             download_root=str(MODELS / "whisper"))
+                             download_root=str(MODELS / "whisper"), **extra)
             log and log(f"Whisper {model_name} loaded on {dev} ({ct})")
             return m
         except Exception as e:  # noqa: BLE001

@@ -20,9 +20,12 @@ def installed() -> bool:
 
 def available() -> tuple[bool, str]:
     """(usable, reason-if-not): model downloaded AND a GPU that can run it in reasonable time."""
+    ok, why = ai_images_ok()
+    if not ok:
+        return False, why
     if not installed():
         return False, "AI image model not installed (re-run the installer without -Lite)"
-    return ai_images_ok()
+    return True, ""
 
 
 class ImageGen:

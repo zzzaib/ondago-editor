@@ -1,9 +1,9 @@
-# torch / torchvision are installed first by installer/bootstrap.ps1 from the CUDA index.
+# torch / torchvision are installed first by the installer (Windows: CUDA build, Mac: standard build with Metal).
 faster-whisper>=1.1.1
 transformers>=4.56,<6
 diffusers>=0.37
 accelerate>=1.0
-bitsandbytes>=0.45
+bitsandbytes>=0.45; sys_platform != "darwin"
 sentencepiece
 protobuf
 safetensors

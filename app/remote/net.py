@@ -11,6 +11,7 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import platform
 import re
 import shutil
 import socket
@@ -20,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from ..core.paths import IS_WIN, ROOT, TOOLS
+from ..core.paths import IS_MAC, IS_WIN, ROOT, TOOLS
 
 CREATE_NO_WINDOW = 0x08000000 if IS_WIN else 0
 Log = Callable[[str], None]
@@ -110,6 +111,9 @@ def tailscale_exe() -> str | None:
         for base in (os.environ.get("ProgramFiles", r"C:\Program Files"), os.environ.get("ProgramFiles(x86)", "")):
             if base:
                 cands.append(str(Path(base) / "Tailscale" / "tailscale.exe"))
+    if IS_MAC:
+        cands += ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "/usr/local/bin/tailscale",
+                  "/opt/homebrew/bin/tailscale"]
     return next((c for c in cands if c and Path(c).exists()), None)
 
 
@@ -149,7 +153,9 @@ def tailscale_serve(port: int, log: Log = print) -> tuple[bool, str]:
 
 
 # ------------------------------------------------------------ Cloudflare
-CLOUDFLARED_URL = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+_CF = "https://github.com/cloudflare/cloudflared/releases/latest/download/"
+CLOUDFLARED_URL = _CF + "cloudflared-windows-amd64.exe"
+CLOUDFLARED_MAC = _CF + ("cloudflared-darwin-arm64.tgz" if platform.machine() == "arm64" else "cloudflared-darwin-amd64.tgz")
 
 
 def cloudflared_path() -> Path:
@@ -163,18 +169,27 @@ def ensure_cloudflared(log: Log = print) -> Path:
     found = shutil.which("cloudflared")
     if found:
         return Path(found)
-    if not IS_WIN:
+    if not (IS_WIN or IS_MAC):
         raise RuntimeError("Install cloudflared (https://github.com/cloudflare/cloudflared) to use a public link.")
     import requests
-    log("Downloading cloudflared (Cloudflare Tunnel, ~60 MB) ...")
+    log("Downloading cloudflared (Cloudflare Tunnel, ~40-60 MB) ...")
     exe.parent.mkdir(parents=True, exist_ok=True)
     tmp = exe.with_suffix(".part")
-    with requests.get(CLOUDFLARED_URL, stream=True, timeout=60) as r:
+    with requests.get(CLOUDFLARED_MAC if IS_MAC else CLOUDFLARED_URL, stream=True, timeout=60) as r:
         r.raise_for_status()
         with open(tmp, "wb") as fh:
             for chunk in r.iter_content(1 << 20):
                 fh.write(chunk)
-    tmp.replace(exe)
+    if IS_MAC:
+        import tarfile
+        with tarfile.open(tmp) as tf:
+            member = next(m for m in tf.getmembers() if m.isfile() and m.name.split("/")[-1] == "cloudflared")
+            with tf.extractfile(member) as src, open(exe, "wb") as dst:  # type: ignore[union-attr]
+                shutil.copyfileobj(src, dst)
+        tmp.unlink(missing_ok=True)
+        exe.chmod(0o755)
+    else:
+        tmp.replace(exe)
     return exe
 
 
@@ -251,7 +266,17 @@ class KeepAwake:
         self._stop = threading.Event()
         self._t: threading.Thread | None = None
 
+    _caf: subprocess.Popen | None = None
+
     def start(self):
+        if IS_MAC:
+            # macOS: `caffeinate -i` keeps the Mac awake (lid open / on power) for as long as OnDaGo runs
+            if self._caf is None or self._caf.poll() is not None:
+                try:
+                    self._caf = subprocess.Popen(["caffeinate", "-i", "-s", "-w", str(os.getpid())])
+                except Exception:  # noqa: BLE001
+                    self._caf = None
+            return
         if not IS_WIN or self._t:
             return
         self._t = threading.Thread(target=self._loop, name="ondago-awake", daemon=True)
@@ -267,6 +292,9 @@ class KeepAwake:
     def stop(self):
         self._stop.set()
         self._t = None
+        if self._caf is not None and self._caf.poll() is None:
+            self._caf.terminate()
+        self._caf = None
 
 
 # ------------------------------------------------------------ autostart
@@ -275,10 +303,37 @@ def _startup_lnk() -> Path:
         "OnDaGo Editor (background).lnk"
 
 
+LAUNCH_AGENT = Path.home() / "Library" / "LaunchAgents" / "com.ondago.editor.plist"
+
+
+def _mac_autostart(on: bool) -> tuple[bool, str]:
+    try:
+        if not on:
+            LAUNCH_AGENT.unlink(missing_ok=True)
+            return True, "removed"
+        py = ROOT / ".venv" / "bin" / "python"
+        LAUNCH_AGENT.parent.mkdir(parents=True, exist_ok=True)
+        LAUNCH_AGENT.write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.ondago.editor</string>
+  <key>ProgramArguments</key><array><string>{py}</string><string>-m</string><string>app.main</string>
+    <string>--background</string></array>
+  <key>WorkingDirectory</key><string>{ROOT}</string>
+  <key>RunAtLoad</key><true/>
+</dict></plist>
+""", encoding="utf-8")
+        return True, "added"
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)
+
+
 def set_autostart(on: bool) -> tuple[bool, str]:
-    """Start OnDaGo hidden in the tray when you log in to Windows (so the phone app is always reachable)."""
+    """Start OnDaGo hidden in the tray / menu bar when you log in (so the phone app is always reachable)."""
+    if IS_MAC:
+        return _mac_autostart(on)
     if not IS_WIN:
-        return False, "Only on Windows"
+        return False, "Only on Windows and macOS"
     lnk = _startup_lnk()
     if not on:
         try:
@@ -301,6 +356,8 @@ def set_autostart(on: bool) -> tuple[bool, str]:
 
 
 def autostart_enabled() -> bool:
+    if IS_MAC:
+        return LAUNCH_AGENT.exists()
     return IS_WIN and _startup_lnk().exists()
 
 

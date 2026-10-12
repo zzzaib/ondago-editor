@@ -28,6 +28,9 @@ def open_path(p: str | Path):
     p = str(p)
     if IS_WIN:
         os.startfile(p)  # noqa: S606
+    elif sys.platform == "darwin":
+        import subprocess
+        subprocess.Popen(["open", p])
     else:
         QDesktopServices.openUrl(QUrl.fromLocalFile(p))
 
@@ -118,9 +121,11 @@ class SettingsTab(QScrollArea):
         f.addRow("", QLabel("Empty = a '<video>_OnDaGo' folder next to your raw video"))
         f.addRow("YouTube shape", cmb("youtube_format", [("Always 16:9 (vertical videos get blurred sides)", "landscape"),
                                                          ("Keep the recording's shape", "keep")]))
-        f.addRow("Video encoder", cmb("encoder", [("Auto (uses your GPU if it can)", "auto"), ("NVIDIA NVENC", "nvenc"),
-                                                 ("AMD AMF (Radeon)", "amf"), ("Intel Quick Sync", "qsv"),
-                                                 ("CPU x264 (slowest)", "x264")]))
+        enc = ([("Auto (uses your Mac's hardware encoder)", "auto"), ("Apple VideoToolbox", "vt")]
+               if sys.platform == "darwin" else
+               [("Auto (uses your GPU if it can)", "auto"), ("NVIDIA NVENC", "nvenc"), ("AMD AMF (Radeon)", "amf"),
+                ("Intel Quick Sync", "qsv")])
+        f.addRow("Video encoder", cmb("encoder", enc + [("CPU x264 (slowest)", "x264")]))
         lay.addWidget(g)
 
         g = QGroupBox("AI models")
@@ -304,7 +309,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"OnDaGo Editor {VERSION}")
         ico = ROOT / "app" / "gui" / "icon.ico"
-        self.icon = QIcon(str(ico)) if ico.exists() else QIcon()
+        png = ROOT / "app" / "remote" / "static" / "icon-512.png"
+        self.icon = QIcon(str(png if sys.platform == "darwin" and png.exists() else ico)) if (ico.exists() or png.exists()) \
+            else QIcon()
         self.setWindowIcon(self.icon)
         self.resize(1360, 880)
         self.setMinimumSize(980, 640)
@@ -474,8 +481,9 @@ class MainWindow(QMainWindow):
             self.hide()
             if not self._tray_hint:
                 self._tray_hint = True
-                self.tray.showMessage("OnDaGo keeps running", "Your phone can still reach it. Right-click the tray "
-                                      "icon to quit.", self.icon, 6000)
+                self.tray.showMessage("OnDaGo keeps running", "Your phone can still reach it. " + (
+                    "Click the OnDaGo icon in the menu bar to quit." if sys.platform == "darwin" else
+                    "Right-click the tray icon to quit."), self.icon, 6000)
             return
         self.quit_app()
         e.accept()
@@ -521,6 +529,10 @@ def run(background: bool = False):
             c.readyRead.connect(lambda: (c.readAll(), w.show_front()))
             w.show_front()
     single.newConnection.connect(on_conn)
+    if sys.platform == "darwin":
+        # macOS: clicking the Dock icon should bring back a window hidden to the menu bar
+        app.applicationStateChanged.connect(
+            lambda st: w.show_front() if st == Qt.ApplicationActive and not w.isVisible() else None)
     if background and w.tray is not None:
         w.tray.showMessage("OnDaGo is running", "The phone app is on. Open me from the tray icon.", w.icon, 5000)
     else:

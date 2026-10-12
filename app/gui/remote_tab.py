@@ -1,6 +1,8 @@
 """Settings -> Phone & remote: run OnDaGo from your phone (Android / iPhone / any browser), from anywhere."""
 from __future__ import annotations
 
+import sys
+
 import secrets
 
 from PySide6.QtCore import Qt, QTimer, QUrl
@@ -13,6 +15,8 @@ from ..core import settings as settings_mod
 from ..core.paths import DATA
 from ..remote import auth, net
 from ..remote.server import get_server
+
+MAC = sys.platform == "darwin"
 
 
 def _muted(text: str) -> QLabel:
@@ -158,7 +162,10 @@ class RemoteTab(QScrollArea):
         g = QGroupBox("Same Wi-Fi: direct, fast, no internet data")
         f = QFormLayout(g)
         f.addRow(_muted("When your phone is on the same Wi-Fi/router as this laptop, uploads and videos go straight "
-                        "between them. Windows blocks this if the Wi-Fi is set to 'Public' or no firewall rule exists."))
+                        "between them. " + ("If macOS asks whether OnDaGo (Python) may accept incoming network "
+                                            "connections, click Allow." if MAC else
+                                            "Windows blocks this if the Wi-Fi is set to 'Public' or no firewall rule "
+                                            "exists.")))
         self.lan_state = QLabel("checking...")
         self.lan_state.setWordWrap(True)
         f.addRow("Status", self.lan_state)
@@ -166,19 +173,24 @@ class RemoteTab(QScrollArea):
         self.b_lan.clicked.connect(self.fix_lan)
         f.addRow(self.b_lan)
         lay.addWidget(g)
+        if MAC:
+            self.b_lan.hide()
 
         # ------------------------------------------------ staying online
         g = QGroupBox("Keep the laptop ready")
         f = QFormLayout(g)
-        self.c_awake = QCheckBox("Don't let Windows sleep while the phone app is on")
+        osname = "your Mac" if MAC else "Windows"
+        self.c_awake = QCheckBox(f"Don't let {osname} sleep while the phone app is on")
         self.c_awake.setChecked(bool(s.get("keep_awake", True)))
-        self.c_auto = QCheckBox("Start OnDaGo in the background when I log in to Windows")
+        self.c_auto = QCheckBox("Start OnDaGo in the background when I log in" + ("" if MAC else " to Windows"))
         self.c_auto.setChecked(net.autostart_enabled() or bool(s.get("start_with_windows")))
-        self.c_tray = QCheckBox("Closing the window keeps OnDaGo running in the tray")
+        self.c_tray = QCheckBox("Closing the window keeps OnDaGo running in the " + ("menu bar" if MAC else "tray"))
         self.c_tray.setChecked(bool(s.get("close_to_tray", True)))
         for c in (self.c_awake, self.c_auto, self.c_tray):
             f.addRow(c)
-        f.addRow(_muted("Plug the laptop in. If you close the lid, set Windows to do nothing on lid close: Control Panel -> "
+        f.addRow(_muted("Keep the MacBook plugged in and the lid open (or use it with an external display); a closed "
+                        "lid on battery puts any Mac to sleep." if MAC else
+                        "Plug the laptop in. If you close the lid, set Windows to do nothing on lid close: Control Panel -> "
                         "Power Options -> 'Choose what closing the lid does' -> When plugged in: Do nothing."))
         lay.addWidget(g)
 
@@ -258,6 +270,11 @@ class RemoteTab(QScrollArea):
             self.folders.addItem(d)
 
     def check_lan(self):
+        if MAC:
+            ips = net.lan_ips()
+            self.lan_state.setText(("On this Wi-Fi: " + ", ".join(f"http://{i}:{self.port.value()}" for i in ips))
+                                   if ips else "Not connected to a Wi-Fi/LAN")
+            return
         st = net.lan_status(self.port.value())
         self._lan = st
         pub = [n for n in st["networks"] if n["category"] == "Public"]

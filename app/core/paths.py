@@ -23,6 +23,7 @@ FONTS = MODELS / "fonts"
 CONFIG = ROOT / "config"
 
 IS_WIN = os.name == "nt"
+IS_MAC = sys.platform == "darwin"
 
 for _d in (DATA, JOBS, CACHE):
     _d.mkdir(parents=True, exist_ok=True)
@@ -46,6 +47,7 @@ def setup_environment() -> None:
     os.environ.setdefault("OLLAMA_MODELS", str(MODELS / "ollama"))
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")  # Apple Silicon: run missing Metal ops on the CPU
 
     _prepend_path(TOOLS / "ffmpeg" / "bin")
     _prepend_path(TOOLS / "ollama")
@@ -72,6 +74,10 @@ def ollama_bin() -> str | None:
     local = TOOLS / "ollama" / ("ollama.exe" if IS_WIN else "ollama")
     if local.exists():
         return str(local)
+    if IS_MAC:
+        app = Path("/Applications/Ollama.app/Contents/Resources/ollama")
+        if app.exists():
+            return str(app)
     return shutil.which("ollama")
 
 
@@ -82,6 +88,8 @@ def font_path(name: str) -> Path:
     # fallbacks for dev machines
     for cand in [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "/Library/Fonts/Arial Bold.ttf",
         "C:/Windows/Fonts/arialbd.ttf",
         "C:/Windows/Fonts/impact.ttf",
     ]:

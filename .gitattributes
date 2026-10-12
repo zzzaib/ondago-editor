@@ -2,6 +2,9 @@
 *.bat  text eol=crlf
 *.cmd  text eol=crlf
 *.ps1  text eol=crlf
+# macOS scripts must keep LF line endings (CRLF breaks bash)
+*.sh       text eol=lf
+*.command  text eol=lf
 # everything else: normalise
 *.py   text eol=lf
 *.json text eol=lf

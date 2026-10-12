@@ -45,8 +45,23 @@ def has_cuda() -> bool:
         return False
 
 
+@lru_cache(maxsize=1)
+def has_mps() -> bool:
+    """Apple-Silicon GPU (Metal) usable by PyTorch?"""
+    try:
+        import torch
+        if not (getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()):
+            return False
+        torch.zeros(1, device="mps").add_(1)
+        return True
+    except Exception:
+        return False
+
+
 def device() -> str:
-    return "cuda" if has_cuda() else "cpu"
+    if has_cuda():
+        return "cuda"
+    return "mps" if has_mps() else "cpu"
 
 
 def half_ok() -> bool:
@@ -74,6 +89,17 @@ def gpu_names() -> tuple[str, ...]:
             names += [x.strip() for x in out.stdout.splitlines() if x.strip()]
     except Exception:  # noqa: BLE001
         pass
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run(["system_profiler", "SPDisplaysDataType"], capture_output=True, text=True, timeout=15)
+            for ln in out.stdout.splitlines():
+                ln = ln.strip()
+                if ln.startswith("Chipset Model:"):
+                    x = ln.split(":", 1)[1].strip()
+                    if x and x not in names:
+                        names.append(x)
+        except Exception:  # noqa: BLE001
+            pass
     if sys.platform == "win32":
         try:
             out = subprocess.run(["powershell", "-NoProfile", "-Command",
@@ -89,8 +115,11 @@ def gpu_names() -> tuple[str, ...]:
 
 
 def vendor() -> str:
-    """'nvidia' / 'amd' / 'intel' / '' - the best graphics card in this PC."""
+    """'nvidia' / 'apple' / 'amd' / 'intel' / '' - the best graphics card in this PC."""
+    import sys
     low = " | ".join(gpu_names()).lower()
+    if sys.platform == "darwin" and ("apple" in low or not low):
+        return "apple"
     for v, keys in (("nvidia", ("nvidia", "geforce", "rtx", "quadro")), ("amd", ("amd", "radeon")),
                     ("intel", ("intel",))):
         if any(k in low for k in keys):
@@ -102,6 +131,8 @@ def ai_images_ok() -> tuple[bool, str]:
     """FLUX.2 klein on this machine? Needs an RTX-class GPU (Turing 7.5+); Pascal would take many minutes per image."""
     cap = capability()
     if not has_cuda():
+        if vendor() == "apple" or __import__("sys").platform == "darwin":
+            return False, "AI images need an NVIDIA RTX GPU (not available on Mac yet)"
         if vendor() in ("amd", "intel"):
             return False, "AI images need an NVIDIA RTX GPU (AMD / Intel GPUs can't run this model yet)"
         return False, "no usable NVIDIA GPU for PyTorch (AI images need an RTX card)"

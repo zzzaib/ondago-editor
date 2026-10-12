@@ -43,7 +43,7 @@ def _u(name: str) -> str:
 
 
 QSS = f"""
-* {{ font-family: 'Segoe UI Variable Text', 'Segoe UI', 'Inter', sans-serif; font-size: 10pt; color: {TEXT}; }}
+* {{ font-family: 'Segoe UI Variable Text', 'Segoe UI', '.AppleSystemUIFont', 'SF Pro Text', 'Helvetica Neue', 'Inter', sans-serif; font-size: 10pt; color: {TEXT}; }}
 QMainWindow, QWidget {{ background: {BG}; }}
 QLabel, QCheckBox, QRadioButton {{ background: transparent; }}
 QToolTip {{ background: {SURFACE_2}; color: {TEXT}; border: 1px solid {LINE}; padding: 6px; border-radius: 6px; }}

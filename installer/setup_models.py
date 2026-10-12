@@ -179,9 +179,13 @@ def main():
     try:
         import torch
         cuda = torch.cuda.is_available()
-        ok(f"torch {torch.__version__}, CUDA: {cuda}" + (f" ({torch.cuda.get_device_name(0)})" if cuda else ""))
-        if not cuda:
-            print("  [WARN] GPU not available to PyTorch - everything will run on CPU (slow).")
+        if sys.platform == "darwin":
+            mps = bool(getattr(torch.backends, "mps", None) and torch.backends.mps.is_available())
+            ok(f"torch {torch.__version__}, Apple GPU (Metal): {mps}")
+        else:
+            ok(f"torch {torch.__version__}, CUDA: {cuda}" + (f" ({torch.cuda.get_device_name(0)})" if cuda else ""))
+            if not cuda:
+                print("  [WARN] NVIDIA GPU not available to PyTorch - AI parts run on the CPU (slower).")
     except Exception as e:  # noqa: BLE001
         failures.append(f"torch: {e}")
     try:

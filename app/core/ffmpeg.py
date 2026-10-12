@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import platform
 import subprocess
+import sys
 import threading
 import time
 from collections import deque
@@ -139,12 +141,17 @@ def available_encoders() -> str:
 NVENC_ERROR = ""
 
 
-# GPU video encoders, tried in this order by "auto". All three come with the FFmpeg build the installer downloads.
-HW_ENCODERS = {"nvenc": ("h264_nvenc", "NVIDIA NVENC"), "amf": ("h264_amf", "AMD AMF"),
-               "qsv": ("h264_qsv", "Intel Quick Sync")}
+# GPU video encoders, tried in this order by "auto". They all come with the FFmpeg build the installer downloads.
+# On a Mac (Intel or Apple M-series) the hardware encoder is Apple VideoToolbox.
+IS_MAC = sys.platform == "darwin"
+IS_ARM_MAC = IS_MAC and platform.machine() == "arm64"
+HW_ENCODERS = ({"vt": ("h264_videotoolbox", "Apple VideoToolbox")} if IS_MAC else
+               {"nvenc": ("h264_nvenc", "NVIDIA NVENC"), "amf": ("h264_amf", "AMD AMF"),
+                "qsv": ("h264_qsv", "Intel Quick Sync")})
 _HW_TEST = {"nvenc": ["-pix_fmt", "yuv420p", "-c:v", "h264_nvenc"],
             "amf": ["-pix_fmt", "yuv420p", "-c:v", "h264_amf", "-usage", "transcoding"],
-            "qsv": ["-pix_fmt", "nv12", "-c:v", "h264_qsv"]}
+            "qsv": ["-pix_fmt", "nv12", "-c:v", "h264_qsv"],
+            "vt": ["-pix_fmt", "yuv420p", "-c:v", "h264_videotoolbox", "-b:v", "4M"]}
 HW_ERRORS: dict[str, str] = {}
 
 
@@ -165,9 +172,11 @@ def hw_works(kind: str) -> bool:
             low = msg.lower()
             absent = {"nvenc": ("cannot load nvcuda", "cannot load libcuda", "no nvenc capable devices"),
                       "amf": ("amfrt64", "dll", "failed to open", "no device"),
-                      "qsv": ("mfx session", "no device", "unsupported")}[kind]
+                      "qsv": ("mfx session", "no device", "unsupported"),
+                      "vt": ("cannot create compression session",)}[kind]
             if any(a in low for a in absent):
-                HW_ERRORS[kind] = "no " + {"nvenc": "NVIDIA", "amf": "AMD", "qsv": "Intel"}[kind] + " GPU/driver found"
+                HW_ERRORS[kind] = "no " + {"nvenc": "NVIDIA", "amf": "AMD", "qsv": "Intel",
+                                           "vt": "hardware video encoder"}[kind] + " GPU/driver found"
             else:
                 HW_ERRORS[kind] = _nvenc_reason(msg) if kind == "nvenc" else _hw_reason(msg, codec)
     if kind == "nvenc":
@@ -184,6 +193,8 @@ def pick_encoder(setting: str = "auto") -> str:
     """'nvenc' / 'amf' / 'qsv' / 'x264'. A forced GPU encoder that doesn't work falls back to x264."""
     if setting in HW_ENCODERS:
         return setting if hw_works(setting) else "x264"
+    if setting in ("nvenc", "amf", "qsv", "vt"):  # a setting copied from another computer
+        setting = "auto"
     if setting == "auto":
         for k in HW_ENCODERS:
             if hw_works(k):
@@ -236,6 +247,14 @@ def video_codec_args(setting: str = "auto", quality: str = "final") -> list[str]
         q = (14, 15, 16) if inter else (18, 19, 21)
         return ["-c:v", "h264_amf", "-usage", "transcoding", "-quality", "quality", "-rc", "cqp",
                 "-qp_i", str(q[0]), "-qp_p", str(q[1]), "-qp_b", str(q[2]), "-profile:v", "high",
+                "-pix_fmt", "yuv420p", *tags]
+    if kind == "vt":
+        # Apple VideoToolbox: constant quality on Apple Silicon, bitrate mode on Intel Macs
+        if IS_ARM_MAC:
+            q = ["-q:v", "78" if inter else "62"]
+        else:
+            q = ["-b:v", "40M" if inter else "12M", "-maxrate", "60M" if inter else "16M", "-bufsize", "32M"]
+        return ["-c:v", "h264_videotoolbox", *q, "-profile:v", "high", "-allow_sw", "1",
                 "-pix_fmt", "yuv420p", *tags]
     if kind == "qsv":
         return ["-c:v", "h264_qsv", "-preset", "slow", "-global_quality", "16" if inter else "20",
