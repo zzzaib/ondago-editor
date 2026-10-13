@@ -16,3 +16,5 @@ __pycache__/
 client_secret*.json
 youtube_token.json
 .env
+# macOS Finder files
+.DS_Store

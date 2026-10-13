@@ -1,6 +1,8 @@
 #!/bin/bash
 # OnDaGo Editor installer for macOS. Double-click this file (or run:  bash install.command)
 cd "$(dirname "$0")" || exit 1
+# make sure the other Mac scripts are runnable (git on Windows can drop the executable flag)
+chmod +x install.command run.command installer/bootstrap_mac.sh 2>/dev/null
 echo ""
 echo " OnDaGo Editor installer (macOS)"
 echo " Downloads Python, PyTorch, FFmpeg, Ollama and the AI models into this folder."
