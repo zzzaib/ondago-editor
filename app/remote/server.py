@@ -141,6 +141,7 @@ class RemoteServer:
         self.uv = None
         self.tunnel: net.Tunnel | None = None
         self.awake = net.KeepAwake()
+        self.activity = net.MacActivity()
         self.port = 8765
         self.public_url = ""
         self.ts_https = ""
@@ -190,6 +191,8 @@ class RemoteServer:
         self.started = time.time()
         if cfg.get("keep_awake", True):
             self.awake.start()
+        if net.IS_MAC and self.activity.begin(bool(cfg.get("keep_awake", True))):
+            self.log("macOS: App Nap is off while the phone app runs (keeps uploads fast in the background)")
         mode = cfg.get("remote_tunnel", "off")
         if mode in ("quick", "named"):
             if mode == "named" and not cfg.get("cloudflare_token"):
@@ -209,6 +212,7 @@ class RemoteServer:
             self.tunnel = None
         self.public_url = ""
         self.awake.stop()
+        self.activity.end()
         if self.uv:
             self.uv.should_exit = True
         if self.thread:

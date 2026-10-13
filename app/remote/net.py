@@ -258,6 +258,70 @@ class Tunnel:
 
 
 # ------------------------------------------------------------ keep awake
+class MacActivity:
+    """macOS 'App Nap' throttles apps that are in the background (window hidden, other app in front): their
+    threads get low priority and their disk / network I/O is slowed down a lot. For a server that the phone
+    talks to, that made uploads crawl and time out. This tells macOS the app is doing user-initiated,
+    latency-critical work while the phone app is on (NSProcessInfo.beginActivityWithOptions)."""
+    USER_INITIATED = 0x00FFFFFF
+    ALLOW_IDLE_SLEEP = 0x00EFFFFF          # user-initiated, but the Mac may still go to sleep when idle
+    LATENCY_CRITICAL = 0xFF00000000
+
+    def __init__(self):
+        self._token = None
+        self._pinfo = None
+        self._f = None
+
+    def _setup(self):
+        import ctypes
+        import ctypes.util
+        objc = ctypes.cdll.LoadLibrary(ctypes.util.find_library("objc"))
+        ctypes.cdll.LoadLibrary(ctypes.util.find_library("Foundation"))
+        objc.objc_getClass.restype = ctypes.c_void_p
+        objc.objc_getClass.argtypes = [ctypes.c_char_p]
+        objc.sel_registerName.restype = ctypes.c_void_p
+        objc.sel_registerName.argtypes = [ctypes.c_char_p]
+        addr = ctypes.cast(objc.objc_msgSend, ctypes.c_void_p).value
+        V = ctypes.c_void_p
+        self._f = {
+            "cls": objc.objc_getClass, "sel": objc.sel_registerName,
+            "msg0": ctypes.CFUNCTYPE(V, V, V)(addr),
+            "msg_str": ctypes.CFUNCTYPE(V, V, V, ctypes.c_char_p)(addr),
+            "msg_act": ctypes.CFUNCTYPE(V, V, V, ctypes.c_uint64, V)(addr),
+            "msg_obj": ctypes.CFUNCTYPE(None, V, V, V)(addr),
+        }
+        f = self._f
+        self._pinfo = f["msg0"](f["cls"](b"NSProcessInfo"), f["sel"](b"processInfo"))
+
+    def begin(self, keep_awake: bool = True) -> bool:
+        if not IS_MAC or self._token:
+            return bool(self._token)
+        try:
+            if self._f is None:
+                self._setup()
+            f = self._f
+            reason = f["msg_str"](f["cls"](b"NSString"), f["sel"](b"stringWithUTF8String:"),
+                                  b"OnDaGo phone app is serving your phone")
+            opts = (self.USER_INITIATED if keep_awake else self.ALLOW_IDLE_SLEEP) | self.LATENCY_CRITICAL
+            tok = f["msg_act"](self._pinfo, f["sel"](b"beginActivityWithOptions:reason:"), opts, reason)
+            if tok:
+                self._token = f["msg0"](tok, f["sel"](b"retain"))
+            return bool(self._token)
+        except Exception:  # noqa: BLE001
+            return False
+
+    def end(self):
+        if not IS_MAC or not self._token:
+            return
+        try:
+            f = self._f
+            f["msg_obj"](self._pinfo, f["sel"](b"endActivity:"), self._token)
+            f["msg0"](self._token, f["sel"](b"release"))
+        except Exception:  # noqa: BLE001
+            pass
+        self._token = None
+
+
 class KeepAwake:
     """Stops Windows from going to sleep while the app is serving your phone (the screen may still turn off)."""
     ES_CONTINUOUS, ES_SYSTEM_REQUIRED, ES_AWAYMODE_REQUIRED = 0x80000000, 0x00000001, 0x00000040
