@@ -357,6 +357,8 @@ def create_app(server: RemoteServer) -> FastAPI:
 
     fast_paths = ("/api/ping", "/api/uploads", "/media/")
 
+    _upload_timing: list[float] = []
+
     class Headers:
         """Pure ASGI middleware (no BaseHTTPMiddleware): adds CORS for the fast local address + security headers.
         BaseHTTPMiddleware re-streams every request/response through extra tasks; with big uploads its replies
@@ -390,11 +392,20 @@ def create_app(server: RemoteServer) -> FastAPI:
                     await send({"type": "http.response.body", "body": b""})
                     return
 
+            t_req = time.time()
+            timed = scope["method"] == "PUT" and path.startswith("/api/uploads/")
+
             async def send2(msg):
                 if msg["type"] == "http.response.start":
                     have = {k.lower() for k, _ in msg.get("headers", [])}
                     msg = {**msg, "headers": list(msg.get("headers", [])) + [h for h in extra if h[0] not in have]}
                 await send(msg)
+                if timed and msg["type"] == "http.response.body" and not msg.get("more_body"):
+                    dt = time.time() - t_req
+                    _upload_timing.append(dt)
+                    if len(_upload_timing) in (1, 2, 3) or len(_upload_timing) % 25 == 0 or dt > 2:
+                        server.log(f"Phone upload: reply sent {dt:.2f}s after the chunk request started "
+                                   f"(chunk #{len(_upload_timing)})")
             await self.inner(scope, receive, send2)
 
     app.add_middleware(Headers)

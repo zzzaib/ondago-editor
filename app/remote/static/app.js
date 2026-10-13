@@ -435,6 +435,33 @@ function putChunk(url, blob, fast, onBytes, stallMs) {
   });
 }
 
+// Safari (iPhone / iPad / Mac) loses the reply to big XMLHttpRequest uploads on a direct Wi-Fi connection,
+// so there each chunk is sent with fetch() instead (no byte-level progress, but chunks are small).
+const UA = navigator.userAgent;
+const APPLE_WEBKIT = /iP(hone|ad|od)/.test(UA) || (/Safari\//.test(UA) && !/Chrome|Chromium|CriOS|Android|Edg/.test(UA));
+
+function fetchChunk(url, blob, fast, onBytes, timeoutMs) {
+  const ctl = new AbortController(); const t0 = Date.now();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  const headers = { "X-OnDaGo": "1", "Content-Type": "application/octet-stream" };
+  if (fast) headers.Authorization = "Bearer " + fast.token;
+  return fetch(fast ? fast.base + url : url, { method: "PUT", body: blob, headers, signal: ctl.signal,
+    credentials: fast ? "omit" : "same-origin", cache: "no-store" })
+    .then(async r => {
+      clearTimeout(timer);
+      let j = null; try { j = await r.json(); } catch (e) { /* not json */ }
+      if (r.status === 200 || (r.status === 409 && j && "received" in j)) { onBytes(blob.size); return j; }
+      if (r.status === 401) S.authed = false;
+      throw new ApiError(r.status, (j && j.detail) || r.statusText || "upload failed");
+    }, e => {
+      clearTimeout(timer);
+      const err = new ApiError(0, ctl.signal.aborted ? "reply lost" : "connection dropped");
+      err.replyLost = true;  // ask the laptop how much it has, then continue
+      err.diag = { secs: (Date.now() - t0) / 1000, size: blob.size, via: "fetch", name: e && e.name };
+      throw err;
+    });
+}
+
 // upload diagnostics -> the laptop's log (Log page), so connection problems can be seen and fixed
 function report(msg) {
   try { fetch("/api/clientlog", { method: "POST", credentials: "same-origin", keepalive: true,
@@ -467,17 +494,22 @@ async function uploadFile(file, onprog) {
     onprog(cur / file.size, `${mb(cur)} of ${mb(file.size)} · ${(sp / 1e6).toFixed(1)} MB/s${eta ? " · " + eta : ""} · ${route()}`);
   };
   let lock = null; try { lock = await navigator.wakeLock?.request("screen"); } catch (e) { /* only on https */ }
-  report(`upload start ${file.name} ${mb(file.size)} via=${S.net.via} fast=${fast ? fast.base : "no"} page=${location.origin} ua=${navigator.userAgent.slice(0, 90)}`);
-  let okN = 0, okSecs = 0, lostReplies = 0;
+  report(`upload start ${file.name} ${mb(file.size)} via=${S.net.via} fast=${fast ? fast.base : "no"} method=${APPLE_WEBKIT ? "fetch" : "xhr"} page=${location.origin} ua=${navigator.userAgent.slice(0, 90)}`);
+  let okN = 0, okSecs = 0, lostReplies = 0, rate = 4e6;  // bytes/s, learned from finished chunks
   try {
     while (off < file.size) {
       const end = Math.min(file.size, off + CH);
       const t = Date.now();
       try {
-        const r = await putChunk(`/api/uploads/${id}?offset=${off}`, file.slice(off, end), fast, n => stats(off + n), 20000);
+        const blob = file.slice(off, end);
+        const r = APPLE_WEBKIT
+          ? await fetchChunk(`/api/uploads/${id}?offset=${off}`, blob, fast, n => stats(off + n),
+              Math.min(60000, Math.max(3000, 2500 + blob.size / rate * 1500)))   // ~1.5x the time this link needs
+          : await putChunk(`/api/uploads/${id}?offset=${off}`, blob, fast, n => stats(off + n), 20000);
         off = r.received; tries = 0;
         const secs = (Date.now() - t) / 1000;   // grow chunks on fast links, shrink on slow ones
         okN++; okSecs += secs;
+        rate = Math.min(40e6, Math.max(1e6, blob.size / Math.max(0.05, secs)));
         if (okN % 5 === 0) { report(`upload ok x5: avg ${(okSecs / 5).toFixed(2)}s per chunk, chunk ${mb(CH)}, at ${mb(off)}, fast=${fast ? "yes" : "no"}`); okSecs = 0; }
         if (secs < 3 && CH < MAXC) CH *= 2; else if (secs > 12 && CH > MINC) CH = Math.max(MINC, CH / 2);
         stats(off);
