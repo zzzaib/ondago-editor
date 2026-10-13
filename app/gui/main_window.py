@@ -298,6 +298,7 @@ class SettingsTab(QScrollArea):
 # ======================================================================== Window
 class _Bridge(QObject):
     event = Signal(dict)
+    line = Signal(str)
 
 
 NAV = [("create", "✨   New edit"), ("projects", "🗂   Projects"), ("review", "🎬   Review && publish"),
@@ -319,6 +320,9 @@ class MainWindow(QMainWindow):
         self.cfg = settings_mod.load()
         self.current_job: Job | None = None
         self.logfile = open(DATA / "app.log", "a", encoding="utf-8")
+        import threading
+        self._log_lock = threading.Lock()
+        self._logbridge = _Bridge()
 
         root = QWidget()
         h = QHBoxLayout(root)
@@ -364,6 +368,7 @@ class MainWindow(QMainWindow):
         self.logview.setObjectName("log")
         self.logview.setReadOnly(True)
         self.logview.setMaximumBlockCount(5000)
+        self._logbridge.line.connect(self.logview.appendPlainText)
         self.projects = ProjectsPage(self)
         self.create = CreateTab(self)
         self.review = ReviewTab(self)
@@ -409,13 +414,16 @@ class MainWindow(QMainWindow):
             self.projects.refresh()
 
     def log(self, msg: str):
+        """Safe from any thread (phone server, workers): the text box is only touched on the GUI thread.
+        Touching Qt widgets from the server thread used to stall the phone app's replies (notably on macOS)."""
         line = f"[{time.strftime('%H:%M:%S')}] {msg}"
-        self.logview.appendPlainText(line)
-        try:
-            self.logfile.write(line + "\n")
-            self.logfile.flush()
-        except Exception:
-            pass
+        with self._log_lock:
+            try:
+                self.logfile.write(line + "\n")
+                self.logfile.flush()
+            except Exception:
+                pass
+        self._logbridge.line.emit(line)
 
     def _remote_event(self, ev: dict):
         if ev.get("type") == "log":

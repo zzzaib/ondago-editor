@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import queue
 import re
 import secrets
 import shutil
@@ -133,7 +134,9 @@ def _client_ip(req: Request) -> str:
 # =================================================================== server
 class RemoteServer:
     def __init__(self, log: Callable[[str], None] = print):
-        self.log = log
+        self._sink = log
+        self._logq: "queue.Queue[str]" = queue.Queue()
+        threading.Thread(target=self._log_pump, name="ondago-log", daemon=True).start()
         self.thread: threading.Thread | None = None
         self.uv = None
         self.tunnel: net.Tunnel | None = None
@@ -145,6 +148,18 @@ class RemoteServer:
         self.started = 0.0
 
     # ------------------------------------------------------------ lifecycle
+
+    def log(self, msg: str) -> None:
+        """Never blocks the web server: lines go to a queue and are written by a helper thread."""
+        self._logq.put(msg)
+
+    def _log_pump(self) -> None:
+        while True:
+            msg = self._logq.get()
+            try:
+                self._sink(msg)
+            except Exception:  # noqa: BLE001
+                pass
     def running(self) -> bool:
         return bool(self.thread and self.thread.is_alive())
 
@@ -569,9 +584,12 @@ def create_app(server: RemoteServer) -> FastAPI:
                 fh.write(data)
         await run_in_threadpool(write)
         via, ip = _route(req)
-        server.log(f"Phone upload {m['name']}: {(have + len(data)) / 1e6:.1f} / {m['size'] / 1e6:.1f} MB  "
-                   f"(+{len(data) / 1e6:.1f} MB in {secs:.1f}s = {len(data) / 1e6 / secs:.1f} MB/s, {via} {ip})")
-        return {"received": have + len(data)}
+        got = have + len(data)
+        step = int(got * 10 / max(1, m["size"]))  # one log line per 10% (not per chunk)
+        if have == 0 or got >= m["size"] or step != int(have * 10 / max(1, m["size"])):
+            server.log(f"Phone upload {m['name']}: {got / 1e6:.1f} / {m['size'] / 1e6:.1f} MB  "
+                       f"(+{len(data) / 1e6:.1f} MB in {secs:.1f}s = {len(data) / 1e6 / secs:.1f} MB/s, {via} {ip})")
+        return {"received": got}
 
     @app.post("/api/uploads/{uid}/complete", dependencies=[Depends(authed)])
     def upload_done(uid: str):
