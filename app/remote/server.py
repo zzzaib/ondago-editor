@@ -575,6 +575,7 @@ def create_app(server: RemoteServer) -> FastAPI:
         have = part.stat().st_size if part.exists() else 0
         if offset != have:
             return JSONResponse({"received": have}, status_code=409)
+        t_in = time.time()
         t0 = time.time()
         data = await req.body()
         secs = max(0.001, time.time() - t0)
@@ -593,7 +594,20 @@ def create_app(server: RemoteServer) -> FastAPI:
         if have == 0 or got >= m["size"] or step != int(have * 10 / max(1, m["size"])):
             server.log(f"Phone upload {m['name']}: {got / 1e6:.1f} / {m['size'] / 1e6:.1f} MB  "
                        f"(+{len(data) / 1e6:.1f} MB in {secs:.1f}s = {len(data) / 1e6 / secs:.1f} MB/s, {via} {ip})")
+        dt = time.time() - t_in
+        if dt > 2:
+            server.log(f"Phone upload: slow chunk on the laptop side ({dt:.1f}s)")
         return {"received": got}
+
+    @app.post("/api/clientlog", dependencies=[Depends(authed)])
+    async def client_log(req: Request):
+        try:
+            b = await req.json()
+        except Exception:  # noqa: BLE001
+            b = {}
+        via, ip = _route(req)
+        server.log(f"Phone ({via} {ip}): {str(b.get('msg', ''))[:400]}")
+        return {"ok": True}
 
     @app.post("/api/uploads/{uid}/complete", dependencies=[Depends(authed)])
     def upload_done(uid: str):

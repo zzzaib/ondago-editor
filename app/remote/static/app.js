@@ -412,19 +412,29 @@ function putChunk(url, blob, fast, onBytes, stallMs) {
     x.setRequestHeader("X-OnDaGo", "1");
     x.setRequestHeader("Content-Type", "application/octet-stream");
     if (fast) x.setRequestHeader("Authorization", "Bearer " + fast.token);
-    let last = Date.now();
+    const t0 = Date.now(); let last = t0, sent = 0, upDone = 0;
     const dog = setInterval(() => { if (Date.now() - last > stallMs) x.abort(); }, 1000);
     const done = () => clearInterval(dog);
-    x.upload.onprogress = e => { last = Date.now(); onBytes(e.loaded); };
+    const why = err => { err.diag = { secs: (Date.now() - t0) / 1000, sent, size: blob.size, upDone: upDone ? (upDone - t0) / 1000 : -1,
+      quiet: (Date.now() - last) / 1000, status: x.status, ready: x.readyState }; return err; };
+    x.upload.onprogress = e => { last = Date.now(); sent = e.loaded; onBytes(e.loaded); };
+    x.upload.onload = () => { upDone = Date.now(); last = Date.now(); };
     x.onload = () => {
       done(); let j = null; try { j = JSON.parse(x.responseText); } catch (e) { /* not json */ }
       if (x.status === 200 || (x.status === 409 && j && "received" in j)) resolve(j);
-      else { if (x.status === 401) { S.authed = false; } reject(new ApiError(x.status, (j && j.detail) || x.statusText || "upload failed")); }
+      else { if (x.status === 401) { S.authed = false; } reject(why(new ApiError(x.status, (j && j.detail) || x.statusText || "upload failed"))); }
     };
-    x.onerror = () => { done(); reject(new ApiError(0, "connection dropped")); };
-    x.onabort = () => { done(); reject(new ApiError(0, "connection stalled")); };
+    x.onerror = () => { done(); reject(why(new ApiError(0, "connection dropped"))); };
+    x.onabort = () => { done(); reject(why(new ApiError(0, "connection stalled"))); };
     x.send(blob);
   });
+}
+
+// upload diagnostics -> the laptop's log (Log page), so connection problems can be seen and fixed
+function report(msg) {
+  try { fetch("/api/clientlog", { method: "POST", credentials: "same-origin", keepalive: true,
+    headers: { "X-OnDaGo": "1", "Content-Type": "application/json" }, body: JSON.stringify({ msg: String(msg).slice(0, 400) }) }); }
+  catch (e) { /* ignore */ }
 }
 
 // resumable chunked upload: live speed + time left, adaptive chunk size, stall watchdog, auto-resume
@@ -452,6 +462,8 @@ async function uploadFile(file, onprog) {
     onprog(cur / file.size, `${mb(cur)} of ${mb(file.size)} · ${(sp / 1e6).toFixed(1)} MB/s${eta ? " · " + eta : ""} · ${route()}`);
   };
   let lock = null; try { lock = await navigator.wakeLock?.request("screen"); } catch (e) { /* only on https */ }
+  report(`upload start ${file.name} ${mb(file.size)} via=${S.net.via} fast=${fast ? fast.base : "no"} page=${location.origin} ua=${navigator.userAgent.slice(0, 90)}`);
+  let okN = 0, okSecs = 0;
   try {
     while (off < file.size) {
       const end = Math.min(file.size, off + CH);
@@ -460,9 +472,12 @@ async function uploadFile(file, onprog) {
         const r = await putChunk(`/api/uploads/${id}?offset=${off}`, file.slice(off, end), fast, n => stats(off + n), 20000);
         off = r.received; tries = 0;
         const secs = (Date.now() - t) / 1000;   // grow chunks on fast links, shrink on slow ones
+        okN++; okSecs += secs;
+        if (okN % 5 === 0) { report(`upload ok x5: avg ${(okSecs / 5).toFixed(2)}s per chunk, chunk ${mb(CH)}, at ${mb(off)}, fast=${fast ? "yes" : "no"}`); okSecs = 0; }
         if (secs < 3 && CH < MAXC) CH *= 2; else if (secs > 12 && CH > MINC) CH = Math.max(MINC, CH / 2);
         stats(off);
       } catch (e) {
+        report(`upload FAIL at ${mb(off)} chunk ${mb(CH)} fast=${fast ? "yes" : "no"} try ${tries + 1}: ${e.message} ${JSON.stringify(e.diag || {})}`);
         if (e.status === 401) { render(); throw e; }
         if (e.status && e.status !== 409 && e.status < 500) throw e;
         if (fast && ++fastFails >= 2) { fast = null; toast("Wi-Fi direct path lost - continuing through the normal connection"); }
