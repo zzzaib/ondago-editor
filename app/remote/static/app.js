@@ -413,10 +413,15 @@ function putChunk(url, blob, fast, onBytes, stallMs) {
     x.setRequestHeader("Content-Type", "application/octet-stream");
     if (fast) x.setRequestHeader("Authorization", "Bearer " + fast.token);
     const t0 = Date.now(); let last = t0, sent = 0, upDone = 0;
-    const dog = setInterval(() => { if (Date.now() - last > stallMs) x.abort(); }, 1000);
+    let replyLost = false;
+    const dog = setInterval(() => {
+      // all bytes sent but no reply after 4 s: the laptop almost certainly has the chunk - ask it instead of waiting
+      if (upDone && Date.now() - upDone > 4000) { replyLost = true; x.abort(); }
+      else if (Date.now() - last > stallMs) x.abort();
+    }, 500);
     const done = () => clearInterval(dog);
     const why = err => { err.diag = { secs: (Date.now() - t0) / 1000, sent, size: blob.size, upDone: upDone ? (upDone - t0) / 1000 : -1,
-      quiet: (Date.now() - last) / 1000, status: x.status, ready: x.readyState }; return err; };
+      quiet: (Date.now() - last) / 1000, status: x.status, ready: x.readyState }; err.replyLost = replyLost; return err; };
     x.upload.onprogress = e => { last = Date.now(); sent = e.loaded; onBytes(e.loaded); };
     x.upload.onload = () => { upDone = Date.now(); last = Date.now(); };
     x.onload = () => {
@@ -425,7 +430,7 @@ function putChunk(url, blob, fast, onBytes, stallMs) {
       else { if (x.status === 401) { S.authed = false; } reject(why(new ApiError(x.status, (j && j.detail) || x.statusText || "upload failed"))); }
     };
     x.onerror = () => { done(); reject(why(new ApiError(0, "connection dropped"))); };
-    x.onabort = () => { done(); reject(why(new ApiError(0, "connection stalled"))); };
+    x.onabort = () => { done(); reject(why(new ApiError(0, replyLost ? "reply lost" : "connection stalled"))); };
     x.send(blob);
   });
 }
@@ -463,7 +468,7 @@ async function uploadFile(file, onprog) {
   };
   let lock = null; try { lock = await navigator.wakeLock?.request("screen"); } catch (e) { /* only on https */ }
   report(`upload start ${file.name} ${mb(file.size)} via=${S.net.via} fast=${fast ? fast.base : "no"} page=${location.origin} ua=${navigator.userAgent.slice(0, 90)}`);
-  let okN = 0, okSecs = 0;
+  let okN = 0, okSecs = 0, lostReplies = 0;
   try {
     while (off < file.size) {
       const end = Math.min(file.size, off + CH);
@@ -477,6 +482,12 @@ async function uploadFile(file, onprog) {
         if (secs < 3 && CH < MAXC) CH *= 2; else if (secs > 12 && CH > MINC) CH = Math.max(MINC, CH / 2);
         stats(off);
       } catch (e) {
+        if (e.replyLost) {  // chunk was sent completely: just ask where the laptop is and carry on at full speed
+          lostReplies++;
+          if (lostReplies <= 3 || lostReplies % 20 === 0) report(`upload reply lost x${lostReplies} at ${mb(off)} chunk ${mb(CH)} ${JSON.stringify(e.diag || {})}`);
+          try { const again = await call("POST", "/api/uploads", { name: file.name, size: file.size, key }); off = again.received || off; stats(off); continue; }
+          catch (e2) { /* fall through to the normal retry */ }
+        }
         report(`upload FAIL at ${mb(off)} chunk ${mb(CH)} fast=${fast ? "yes" : "no"} try ${tries + 1}: ${e.message} ${JSON.stringify(e.diag || {})}`);
         if (e.status === 401) { render(); throw e; }
         if (e.status && e.status !== 409 && e.status < 500) throw e;

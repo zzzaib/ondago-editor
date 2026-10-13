@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -357,29 +357,47 @@ def create_app(server: RemoteServer) -> FastAPI:
 
     fast_paths = ("/api/ping", "/api/uploads", "/media/")
 
-    @app.middleware("http")
-    async def security_headers(request: Request, call_next):
-        origin = request.headers.get("origin")
-        cors = bool(origin) and request.url.path.startswith(fast_paths)
-        if cors and request.method == "OPTIONS":  # preflight from the phone app's other address
-            resp = Response(status_code=204)
-        else:
-            resp = await call_next(request)
-        if cors:  # bearer-token only (no cookies), so allowing the calling origin is safe
-            resp.headers["Access-Control-Allow-Origin"] = origin
-            resp.headers["Vary"] = "Origin"
-            resp.headers["Access-Control-Allow-Methods"] = "GET, HEAD, PUT, POST, OPTIONS"
-            resp.headers["Access-Control-Allow-Headers"] = "authorization, content-type, x-ondago, range"
-            resp.headers["Access-Control-Expose-Headers"] = "content-range, content-length, accept-ranges"
-            resp.headers["Access-Control-Max-Age"] = "600"
-            if request.headers.get("access-control-request-private-network"):
-                resp.headers["Access-Control-Allow-Private-Network"] = "true"
-        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
-        resp.headers.setdefault("Referrer-Policy", "no-referrer")
-        resp.headers.setdefault("X-Frame-Options", "DENY")
-        if request.url.path.startswith("/api/"):
-            resp.headers.setdefault("Cache-Control", "no-store")
-        return resp
+    class Headers:
+        """Pure ASGI middleware (no BaseHTTPMiddleware): adds CORS for the fast local address + security headers.
+        BaseHTTPMiddleware re-streams every request/response through extra tasks; with big uploads its replies
+        could reach Safari very late, so the phone waited ~20 s per chunk."""
+
+        def __init__(self, inner):
+            self.inner = inner
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] != "http":
+                return await self.inner(scope, receive, send)
+            path = scope.get("path", "")
+            hdrs = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+            origin = hdrs.get("origin")
+            cors = bool(origin) and path.startswith(fast_paths)
+            extra = [(b"x-content-type-options", b"nosniff"), (b"referrer-policy", b"no-referrer"),
+                     (b"x-frame-options", b"DENY")]
+            if path.startswith("/api/"):
+                extra.append((b"cache-control", b"no-store"))
+            if cors:
+                extra += [(b"access-control-allow-origin", origin.encode("latin-1")), (b"vary", b"Origin"),
+                          (b"access-control-allow-methods", b"GET, HEAD, PUT, POST, OPTIONS"),
+                          (b"access-control-allow-headers", b"authorization, content-type, x-ondago, range"),
+                          (b"access-control-expose-headers", b"content-range, content-length, accept-ranges"),
+                          (b"access-control-max-age", b"600")]
+                if hdrs.get("access-control-request-private-network"):
+                    extra.append((b"access-control-allow-private-network", b"true"))
+                if scope["method"] == "OPTIONS":  # preflight from the phone app's other address
+                    await send({"type": "http.response.start", "status": 204,
+                                "headers": extra + [(b"content-length", b"0")]})
+                    await send({"type": "http.response.body", "body": b""})
+                    return
+
+            async def send2(msg):
+                if msg["type"] == "http.response.start":
+                    have = {k.lower() for k, _ in msg.get("headers", [])}
+                    msg = {**msg, "headers": list(msg.get("headers", [])) + [h for h in extra if h[0] not in have]}
+                await send(msg)
+            await self.inner(scope, receive, send2)
+
+    app.add_middleware(Headers)
 
     # ---------------------------------------------------------- static
     @app.get("/", response_class=HTMLResponse)
