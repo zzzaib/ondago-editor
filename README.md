@@ -54,6 +54,18 @@ OnDaGo Editor is a one-click desktop app for **Windows and macOS** (Apple Silico
 - **AI custom doodles (RTX only):** FLUX draws a doodle of anything ("a VR headset"), then it's traced and animated the same way. Greyed out on GPUs that can't run it.
 - Change, add or switch off any doodle in **Review → Doodles** (or on your phone).
 
+### Vox-style explainer graphics (new in v2.1)
+- Pick the **📰 Vox explainer** style (or tick *Vox-style explainer graphics* in Advanced options) and the editor AI adds explainer graphics where they help:
+  - **title cards**: bold headlines that drop in word by word, with a yellow highlighter swipe;
+  - **highlighted quotes**: your key sentence on a torn sheet of paper, highlighted as the camera pushes in;
+  - **counting numbers**: "70%" fills a 100-dot chart, "5x" grows a bar, "$2 billion" gets a red underline;
+  - **maps**: the world map pushes in to the country or big city you mention (offline Natural Earth outlines);
+  - **timelines**: years you mention, drawn as a line with pop-in dots;
+  - **photo clippings**: B-roll photos become taped paper cut-outs.
+- The look: warm paper texture with "boiling" grain, 12 fps cut-out stutter, whip-pan transitions with motion blur and a fine film grain over the whole video.
+- Only facts you actually said become numbers, maps or timelines; without the editor model, numbers, places and years are still found in the transcript.
+- Everything is drawn on the CPU, so it works the same on every Windows PC and Mac. Change or remove any graphic in Review like a B-roll moment.
+
 ### Phone app (new in v2)
 - **Edit from your phone:** pick a video from the phone (resumable chunked upload) or from the laptop's folders, choose options, watch progress live, pick B-roll, change doodles and text, choose a thumbnail, watch a phone-sized preview, download the HD file and publish to YouTube / Instagram.
 - **Works from anywhere without a static IP:** Tailscale (free, private) or a Cloudflare link (public, password-protected).
@@ -85,6 +97,8 @@ OnDaGo Editor is a one-click desktop app for **Windows and macOS** (Apple Silico
 | < 6 GB, AMD, Intel, no GPU | — | Runs on CPU (very slow) |
 
 The installer detects your GPU and picks the right PyTorch build automatically: CUDA 12.8 for RTX cards, CUDA 12.6 for GTX 10-series.
+
+**Not sure what your computer can do?** Open the **🖥 This computer** page in the app (also in the phone app's Settings). It detects your graphics card or Apple chip and shows, feature by feature, what runs on the GPU, what falls back to the CPU, and what isn't available (for example AI images on a Mac), with a one-click fix where there is one (like switching to the smaller editor model).
 
 ### Minimum requirements
 - **OS:** Windows 10 (1803+) or Windows 11, 64-bit
@@ -274,7 +288,8 @@ OnDaGo Editor's own code is released under the MIT License (see `LICENSE`). The 
 - [FFmpeg](https://ffmpeg.org), [uv](https://github.com/astral-sh/uv), [PySide6](https://doc.qt.io/qtforpython-6/), [FastAPI](https://fastapi.tiangolo.com) + [Uvicorn](https://www.uvicorn.org)
 - Phone access: [Tailscale](https://tailscale.com), [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) (`cloudflared`, downloaded only if you turn on a public link), notifications via [ntfy](https://ntfy.sh)
 - Outline effect: [U²-Net](https://github.com/xuebinqin/U-2-Net) human segmentation via rembg
-- Fonts: Anton, Poppins, Noto Sans Devanagari (SIL Open Font License)
+- Fonts: Anton, Poppins, Libre Baskerville, Noto Sans Devanagari (SIL Open Font License)
+- Map outlines: [Natural Earth](https://www.naturalearthdata.com) (public domain)
 - Stock footage: [Pexels](https://www.pexels.com/license/) and [Pixabay](https://pixabay.com/service/license-summary/), under their own licences
 
 Built by **Syed Zaib Farooq**, with the help of Claude (Anthropic).

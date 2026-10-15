@@ -276,6 +276,8 @@ const OPT_UI = [
     ["doodle_outline", "Glowing outline around you", null, "On key moments"],
     ["callout_doodles", "Underline / circle pop-up text"],
     ["doodle_ai", "AI custom doodles", null, "FLUX draws anything (RTX GPU only)"]]],
+  ["Explainer 📰", [["vox_graphics", "Vox-style explainer graphics", null, "Title cards, highlighted quotes, counting numbers, maps, timelines"],
+    ["vox_density", "How many", [["low", "A few"], ["medium", "Some"], ["high", "Lots"]]]]],
   ["B-roll", [["broll_mode", "B-roll", [["both", "Library + online"], ["offline", "Offline only"], ["online", "Online only"], ["off", "None"]]],
     ["broll_missing_action", "If nothing fits", [["auto", "Decide for me"], ["ask", "Ask me"], ["card", "Text card"], ["ai", "AI image"], ["skip", "Skip"]]],
     ["broll_layout", "Layout", [["auto", "Auto (split-screen + full)"], ["split", "Split-screen"], ["full", "Full screen"]]]]],
@@ -288,12 +290,13 @@ function optionsCard() {
   return OPT_UI.map(([title, rows]) => h("div", { class: "card" }, h("h3", {}, title), rows.map(([k, label, choices, hint]) => {
     const aiOff = k === "doodle_ai" && !(S.status && S.status.ai_images);
     const ddOff = (k.startsWith("doodle_") || k === "callout_doodles") && !o.doodles;
-    const disabled = aiOff || (ddOff && k !== "doodles");
+    const voxOff = k === "vox_density" && !o.vox_graphics;
+    const disabled = aiOff || (ddOff && k !== "doodles") || voxOff;
     const sub = aiOff ? ((S.status && S.status.ai_reason) || "Needs an RTX GPU") : hint;
     let ctl;
     if (k === "_captions") ctl = sel(o.captions ? o.caption_style : "off", choices, v => { o.captions = v !== "off"; if (v !== "off") o.caption_style = v; markPreset(); });
     else if (choices) ctl = sel(String(o[k]), choices, v => { o[k] = v; markPreset(); }, { disabled });
-    else ctl = sw(o[k] && !aiOff, v => { o[k] = v; markPreset(); if (k === "doodles") rerenderNew(); }, disabled);
+    else ctl = sw(o[k] && !aiOff, v => { o[k] = v; markPreset(); if (k === "doodles" || k === "vox_graphics") rerenderNew(); }, disabled);
     return h("div", { class: "opt" + (disabled ? " disabled" : "") }, h("div", { class: "lbl" }, label, sub ? h("small", {}, sub) : null), ctl);
   })));
 }
@@ -707,7 +710,7 @@ function tabBroll(j) {
       try { const id = await uploadFile(f, (p, m) => toast(`Uploading ${Math.round(p * 100)}% · ${m}`)); await act("POST", `/broll/${s.id}/file`, { upload: id, start: 0 }, "Your clip is in"); }
       catch (e) { toast(e.message, true); }
     });
-    const chip = { resolved: ["Ready · " + (s.kind === "graphic" ? "text card" : s.source), "ok"], needs_input: ["Needs you", "warn"], skipped: ["Skipped", ""], pending: ["Pending", ""] }[s.status] || [s.status, ""];
+    const chip = { resolved: ["Ready · " + (s.kind === "graphic" ? "text card" : s.kind === "vox" ? "explainer graphic" : s.source), "ok"], needs_input: ["Needs you", "warn"], skipped: ["Skipped", ""], pending: ["Pending", ""] }[s.status] || [s.status, ""];
     return h("div", { class: "card moment" + (need ? " warn" : "") },
       h("div", { class: "row" }, h("span", { class: "when" }, fmt(s.s)), h("span", { class: "chip " + chip[1] }, chip[0])),
       s.preview ? h("img", { class: "slotprev", src: s.preview, alt: "", style: "margin-top:8px" }) : null,
@@ -814,6 +817,8 @@ function viewSettings() {
       h("div", { class: "kv" }, h("span", {}, "Instagram"), h("span", {}, st.instagram_ready ? "Ready" : "Set up on laptop")),
       h("div", { class: "kv" }, h("span", {}, "Online B-roll"), h("span", {}, st.video_keys ? "Video clips (Pixabay/Pexels)" : "Free photos - add a Pixabay key for video")),
       h("div", { class: "kv" }, h("span", {}, "Version"), h("span", {}, st.version || ""))),
+    h("h2", {}, "What this laptop can handle"),
+    systemCard(),
     h("h2", {}, "Stock video for B-roll"),
     (() => {
       const k = h("input", { type: "password", placeholder: st.video_keys ? "Key saved - paste a new one to replace" : "Paste your free Pixabay API key" });
@@ -832,6 +837,24 @@ function viewSettings() {
       h("p", {}, h("b", {}, "Android: "), "Chrome → ⋮ menu → Add to Home screen / Install app."),
       h("p", { class: "muted" }, "For alerts when an edit finishes, install the free ntfy app and subscribe to the topic shown on the laptop.")),
     h("button", { class: "btn danger big", onclick: async () => { await api("POST", "/api/logout"); S.authed = false; S.status = null; if (S.es) S.es.close(); render(); } }, "Log out"));
+}
+
+function systemCard() {
+  const box = h("div", { class: "card" }, h("p", { class: "muted", style: "margin:0" }, "Checking the laptop…"));
+  const CH = { fast: "ok", ok: "run", slow: "warn", off: "off" };
+  const fill = r => {
+    box.replaceChildren(
+      h("p", { style: "margin-top:0;font-weight:600" }, r.verdict),
+      h("p", { class: "small muted" }, [r.machine.os, r.machine.cpu, Math.round(r.machine.ram_gb) + " GB RAM", (r.machine.gpus || []).join(", ")].filter(Boolean).join(" · ")),
+      ...r.features.map(f => h("div", { class: "sysrow" },
+        h("span", { class: "chip " + (CH[f.status] || "") }, f.level),
+        h("div", {}, h("b", {}, f.title), h("div", { class: "small muted" }, f.engine + (f.note ? " · " + f.note : "")),
+          f.tip ? h("div", { class: "small", style: "color:#FFD27A" }, "💡 " + f.tip) : null))),
+      r.limits.length ? h("div", { class: "small", style: "margin-top:10px" }, h("b", {}, "Limits: "), r.limits.join(" ")) : null);
+  };
+  if (S.system) fill(S.system);
+  api("GET", "/api/system").then(r => { S.system = r; fill(r); }).catch(e => box.replaceChildren(h("p", { class: "muted" }, "Couldn't check: " + e.message)));
+  return box;
 }
 
 // ------------------------------------------------------------------ boot

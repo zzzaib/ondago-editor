@@ -1,3 +1,17 @@
+## OnDaGo Editor v2.1.0: Vox-style explainers + "This computer" page
+
+### What's new
+**📰 Vox-style explainer graphics**
+- New **Vox explainer** style. The editor AI adds explainer graphics where they help: title cards, highlighted quotes on torn paper, counting numbers (dot charts and bars), maps that push in to the country you mention, timelines of the years you mention, and B-roll photos as taped paper clippings.
+- The look: paper texture with boiling grain, 12 fps cut-out animation, whip-pan transitions with motion blur and film grain.
+- Only things you actually said become numbers, maps or timelines. Works offline on any computer (CPU).
+- Also available as a single switch in Advanced options (desktop and phone).
+
+**🖥 This computer**
+- New page that detects your graphics card / Apple chip and shows what every part of the editor runs on (GPU, Apple GPU or CPU), how fast, and what isn't available here, e.g. AI images on a Mac or on AMD / Intel GPUs.
+- Tips with one-click fixes (e.g. use the smaller editor model on 6 GB cards or 8 GB Macs), driver hints when the GPU encoder fails, and a "Copy report" button.
+- The same report is in the phone app's Settings and at the end of the installer.
+
 ## OnDaGo Editor v2.0.0: edit from your phone + animated doodles
 
 ### What's new

@@ -19,6 +19,7 @@ from ..version import VERSION
 from .create_page import CreateTab, ProjectsPage
 from .remote_tab import RemoteTab, autostart_server
 from .review import ReviewTab
+from .system_page import SystemPage
 from .theme import QSS
 
 VIDEO_FILTER = "Videos (*.mp4 *.mov *.mkv *.m4v *.avi *.webm *.MP4 *.MOV)"
@@ -302,7 +303,8 @@ class _Bridge(QObject):
 
 
 NAV = [("create", "✨   New edit"), ("projects", "🗂   Projects"), ("review", "🎬   Review && publish"),
-       ("remote", "📱   Phone app"), ("settings", "⚙️   Settings"), ("log", "📝   Log")]
+       ("remote", "📱   Phone app"), ("system", "🖥   This computer"), ("settings", "⚙️   Settings"),
+       ("log", "📝   Log")]
 
 
 class MainWindow(QMainWindow):
@@ -374,6 +376,7 @@ class MainWindow(QMainWindow):
         self.review = ReviewTab(self)
         self.settings = SettingsTab(self)
         self.remote = RemoteTab(self)
+        self.system = SystemPage(self)
         logpage = QWidget()
         lv = QVBoxLayout(logpage)
         lv.setContentsMargins(28, 26, 28, 24)
@@ -386,7 +389,7 @@ class MainWindow(QMainWindow):
         lv.addWidget(tip)
         lv.addWidget(self.logview, 1)
         self.pages = {"create": self.create, "projects": self.projects, "review": self.review,
-                      "remote": self.remote, "settings": self.settings, "log": logpage}
+                      "remote": self.remote, "system": self.system, "settings": self.settings, "log": logpage}
         for w in self.pages.values():
             self.stack.addWidget(w)
         self.go("create")

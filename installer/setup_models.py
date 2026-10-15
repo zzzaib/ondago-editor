@@ -25,6 +25,8 @@ FONT_URLS = {
     "Poppins-Bold.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/poppins/Poppins-Bold.ttf",
     "Poppins-SemiBold.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/poppins/Poppins-SemiBold.ttf",
     "Poppins-ExtraBold.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/poppins/Poppins-ExtraBold.ttf",
+    "LibreBaskerville.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/librebaskerville/"
+                            "LibreBaskerville%5Bwght%5D.ttf",
     # glyph fallback for Hindi (Devanagari) captions
     "NotoSansDevanagari-Bold.ttf": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/main/fonts/"
                                    "NotoSansDevanagari/hinted/ttf/NotoSansDevanagari-Bold.ttf",
@@ -193,6 +195,12 @@ def main():
         ok(f"FFmpeg video encoder: {encoder_summary('auto')}")
     except Exception as e:  # noqa: BLE001
         failures.append(f"ffmpeg: {e}")
+    try:
+        from app.core import capabilities
+        step("What this computer can handle")
+        print(capabilities.summary_text(capabilities.report()))
+    except Exception as e:  # noqa: BLE001
+        print(f"  [WARN] capability check skipped: {e}")
 
     print()
     if failures:

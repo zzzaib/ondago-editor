@@ -95,11 +95,18 @@ DENSITY = {"low": 40.0, "medium": 20.0, "high": 12.0}
 DOODLE_EVERY = {"low": 30.0, "medium": 16.0, "high": 9.0}
 
 
-def visual_schema(doodles: bool, kinds: list[str]) -> dict:
-    if not doodles:
+def visual_schema(doodles: bool, kinds: list[str], explainer: bool = False) -> dict:
+    if not doodles and not explainer:
         return VISUAL_SCHEMA
     sch = {**VISUAL_SCHEMA, "properties": dict(VISUAL_SCHEMA["properties"]),
-           "required": VISUAL_SCHEMA["required"] + ["doodles"]}
+           "required": list(VISUAL_SCHEMA["required"])}
+    if explainer:
+        from .vox_plan import schema_items
+        sch["properties"]["explainer"] = schema_items()
+        sch["required"].append("explainer")
+    if not doodles:
+        return sch
+    sch["required"].append("doodles")
     sch["properties"]["doodles"] = {"type": "array", "items": {"type": "object", "properties": {
         "segment_id": {"type": "integer"}, "kind": {"type": "string", "enum": kinds},
         "anchor_words": {"type": "string"}, "word": {"type": "string"}, "prompt": {"type": "string"}},
@@ -176,13 +183,16 @@ class Planner:
     def plan_visuals(self, segments: list[dict], exclude: set[int], duration: float) -> dict:
         segs = [s for s in segments if s["id"] not in exclude]
         per = DENSITY.get(self.cfg.get("broll_density", "medium"), 20.0)
-        result = {"broll": [], "callouts": [], "keywords": [], "zoom_ids": [], "doodles": []}
+        result = {"broll": [], "callouts": [], "keywords": [], "zoom_ids": [], "doodles": [], "explainer": []}
         lines = transcript_lines(segs)
         chunks = _chunks(lines)
         want_dd = bool(self.cfg.get("doodles", True))
         from .doodle_shapes import KIND_HELP
         kinds = list(KIND_HELP) + (["custom"] if self.cfg.get("_ai_doodles_ok") else [])
         dd_every = DOODLE_EVERY.get(self.cfg.get("doodle_density", "medium"), 16.0)
+        want_vox = bool(self.cfg.get("vox_graphics", False))
+        from .vox_plan import EVERY as VOX_EVERY, prompt_text as vox_prompt
+        vox_every = VOX_EVERY.get(self.cfg.get("vox_density", "medium"), 18.0)
         for chunk in chunks:
             span = max(30.0, duration * len(chunk) / max(1, len(lines)))
             n_broll = max(1, round(span / per))
@@ -199,6 +209,7 @@ class Planner:
                              "exclamation like WOW, BOOM, OMG only for kind 'wow' (else empty); prompt = only for "
                              "kind 'custom': a 1-4 word English name of the simple object to draw (else empty). "
                              "Choose moments that are NOT B-roll moments and spread them out.\n")
+            vox_text = vox_prompt(max(1, round(span / vox_every))) if want_vox else ""
             r = self._ask(
                 f"Plan visuals for this part of the video.\n"
                 f"1. broll: about {n_broll} moments where cutaway footage would make the video more engaging. "
@@ -214,8 +225,8 @@ class Planner:
                 f"greetings, filler or the first 3 seconds.\n"
                 f"2. callouts: about {n_call} punchy on-screen text pops (max 4 words) for key statements.\n"
                 f"3. keywords: up to 15 important single words to highlight in captions.\n"
-                f"4. zoom_ids: segment ids with emotional or important emphasis for a punch-in zoom.\n{dd_text}\n"
-                + "\n".join(chunk), visual_schema(want_dd, kinds))
+                f"4. zoom_ids: segment ids with emotional or important emphasis for a punch-in zoom.\n{dd_text}{vox_text}\n"
+                + "\n".join(chunk), visual_schema(want_dd, kinds, want_vox))
             if r is None:
                 return self._heuristic_visuals(segs, per)
             for k in result:
@@ -226,6 +237,7 @@ class Planner:
         result["zoom_ids"] = [i for i in result["zoom_ids"] if i in valid]
         result["keywords"] = list(dict.fromkeys(norm(k) for k in result["keywords"] if k))[:25]
         result["doodles"] = [d for d in result.get("doodles", []) if d.get("segment_id") in valid]
+        result["explainer"] = [x for x in result.get("explainer", []) if x.get("segment_id") in valid]
         return result
 
     def _heuristic_visuals(self, segs: list[dict], per: float) -> dict:
@@ -243,7 +255,7 @@ class Planner:
             t_last = s["s"]
         words = Counter(w for s in segs for w in norm(s["text"]).split() if w not in STOP and len(w) > 4)
         return {"broll": broll, "callouts": [], "keywords": [w for w, _ in words.most_common(10)], "zoom_ids": [],
-                "doodles": []}
+                "doodles": [], "explainer": []}
 
     # ----------------------------------------------------------- metadata
     def metadata(self, segments: list[dict], exclude: set[int]) -> dict:

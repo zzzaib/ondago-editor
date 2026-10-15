@@ -159,7 +159,9 @@ class SlotCard(QFrame):
         lay.addLayout(body, 1)
         head = QHBoxLayout()
         t = QLabel(f"<b>{fmt_time(slot['s'])}</b>")
-        src_label = f"text card: {slot.get('card_text', '')}" if slot.get("kind") == "graphic" else slot.get("source", "")
+        src_label = (f"text card: {slot.get('card_text', '')}" if slot.get("kind") == "graphic" else
+                     f"explainer {slot.get('vox', {}).get('kind', 'graphic')}" if slot.get("kind") == "vox" else
+                     slot.get("source", ""))
         badge = QLabel({"resolved": f"Ready - {src_label}", "needs_input": "Needs your input",
                         "skipped": "Skipped", "pending": "Pending"}.get(slot["status"], slot["status"]))
         badge.setObjectName({"resolved": "badgeOk", "needs_input": "badgeWarn"}.get(slot["status"], "badgeSkip"))
@@ -674,7 +676,7 @@ class ReviewTab(QWidget):
 
     def toggle_skip(self, slot):
         if slot["status"] == "skipped":
-            slot["status"] = "resolved" if slot.get("file") else "needs_input"
+            slot["status"] = "resolved" if slot.get("file") or slot.get("kind") in ("graphic", "vox") else "needs_input"
         else:
             slot["status"] = "skipped"
         slot["user_locked"] = True

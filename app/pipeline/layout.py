@@ -68,6 +68,9 @@ def assign_styles(broll: list[dict], mode: str, cfg: dict) -> None:
     pref = cfg.get("broll_layout", "auto")
     k = 0
     for b in broll:
+        if mode == "pip" and (b.get("kind") == "vox" or (cfg.get("vox_graphics") and b.get("kind") == "image")):
+            b["style"] = "full"  # explainer graphics fill the Reel; a picture-in-picture would cover them
+            continue
         if pref == "full":
             b["style"] = "full"
         elif pref == "split" or mode == "pillar":

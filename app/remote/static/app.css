@@ -53,6 +53,9 @@ h3 { font-size: 15px; margin: 0 0 6px; }
   background: var(--panel2); color: var(--muted); border: 1px solid var(--line); }
 .chip.ok { background: #143A2C; color: #7CF0BF; border-color: #1F5A44; }
 .chip.warn { background: #3A2A10; color: #FFD27A; border-color: #6A4A12; }
+.chip.off { background: #3E1E28; color: #FF9DB0; border-color: #5A2A36; }
+.sysrow { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-top: 1px solid var(--line); }
+.sysrow .chip { min-width: 74px; text-align: center; flex: none; margin-top: 2px; }
 .chip.run { background: #241C48; color: #C9BBFF; border-color: #3E2F7A; }
 .chip.bad { background: #3A1820; color: #FF9AA4; border-color: #6A2232; }
 

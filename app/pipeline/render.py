@@ -318,7 +318,7 @@ def render_final(job_dir: Path, base: Path, base_info: dict, out: Path, *, verti
     win = []
     for b in broll:
         s_, e_ = max(b["t0"], t0) - t0, min(b["t1"], t1) - t0
-        graphic = b.get("kind") == "graphic"
+        graphic = b.get("kind") in ("graphic", "vox")
         if b.get("style") == "split" and e_ - s_ >= 0.8 and (graphic or (b.get("file") and Path(b["file"]).exists())):
             win.append((s_, e_))
     mdir = job_dir / "masks"
@@ -385,13 +385,16 @@ def render_final(job_dir: Path, base: Path, base_info: dict, out: Path, *, verti
         bx, by = max(0, min(bx, bw - 2)), max(0, min(by, bh - 2))
         bw2, bh2 = max(2, min(bw2, bw - bx)) // 2 * 2, max(2, min(bh2, bh - by)) // 2 * 2
         return f"[{i}:v]crop={bw2}:{bh2}:{bx}:{by},scale={cw}:{ch}{grade},fps={fps:.6f},setsar=1"
-    # ---- b-roll overlays (footage, images, or animated text-card backgrounds)
+    # ---- b-roll overlays (footage, images, animated text cards, or Vox-style explainer graphics)
+    vox_mode = bool(cfg.get("vox_graphics", False))
     n_b = 0
+    n_vox = 0
     wi = 0
     for bi, b in enumerate(broll):
         s, e = max(b["t0"], t0), min(b["t1"], t1)
         graphic = b.get("kind") == "graphic"
-        if e - s < 0.8 or (not graphic and (not b.get("file") or not Path(b["file"]).exists())):
+        vox_spec = b.get("vox") if b.get("kind") == "vox" else None
+        if e - s < 0.8 or (not graphic and not vox_spec and (not b.get("file") or not Path(b["file"]).exists())):
             continue
         bd = e - s
         S, E = s - t0, e - t0
@@ -399,7 +402,20 @@ def render_final(job_dir: Path, base: Path, base_info: dict, out: Path, *, verti
         px, py, pw, ph = geo["panel"] if split else (0, 0, W, H)
         if split and lmode == "pip":
             px, py, pw, ph = 0, 0, W, H
-        if graphic:
+        if vox_mode and not vox_spec and b["kind"] == "image":  # explainer style: photos become paper clippings
+            vox_spec = {"kind": "photo", "image": clean_still(b["file"], job_dir / "stills", 1600),
+                        "text": b.get("card_text", "")}
+        if vox_spec:
+            from . import vox
+            rel = f"vox/{out.stem}/v{bi:03d}"
+            bottom = 0.95 if split else ((0.60 if H > W else 0.81) if cfg.get("captions", True) else 0.92)
+            vox.render_frames(vox_spec, pw, ph, bd, job_dir / rel, whip_in_out=not split, bottom=bottom,
+                              log=log)
+            inputs += ["-framerate", str(vox.VOX_FPS), "-i", f"{rel}/f_%04d.png"]
+            src = f"[{idx}:v]format=rgba"
+            idx += 1
+            n_vox += 1
+        elif graphic:
             src = (f"gradients=s={pw}x{ph}:c0=0x140C2E:c1=0x6A3DFF:c2=0xFF3D7F:nb_colors=3:speed=0.03:"
                    f"d={bd:.3f}:r={fps:.3f},vignette=PI/4")
         elif b["kind"] == "image":
@@ -412,7 +428,7 @@ def render_final(job_dir: Path, base: Path, base_info: dict, out: Path, *, verti
             inputs += ["-ss", f"{b.get('file_start', 0):.3f}", "-t", f"{bd:.3f}", "-i", b["file"]]
             src = f"[{idx}:v]scale={pw}:{ph}:force_original_aspect_ratio=increase,crop={pw}:{ph}"
             idx += 1
-        if not graphic and cfg.get("color_grade", True):
+        if not graphic and not vox_spec and cfg.get("color_grade", True):
             src += ",eq=contrast=1.04:saturation=1.1"
         fd = min(0.15, bd / 4)
         if split and lmode in ("pillar", "side"):
@@ -466,10 +482,11 @@ def render_final(job_dir: Path, base: Path, base_info: dict, out: Path, *, verti
             wi += 1
             n_b += 1
             continue
-        trans = cfg.get("broll_transition", "slide")
-        fade_in = "" if trans == "slide" else f"fade=t=in:st=0:d={fd:.3f}:alpha=1,"
+        trans = "baked" if vox_spec else cfg.get("broll_transition", "slide")  # vox: whip pan is in the frames
+        fade_in = "" if trans in ("slide", "baked") else f"fade=t=in:st=0:d={fd:.3f}:alpha=1,"
+        fade_out = "" if trans == "baked" else f"fade=t=out:st={bd - fd:.3f}:d={fd:.3f}:alpha=1,"
         g.append(f"{src},fps={fps:.6f},setsar=1,format=yuva420p,"
-                 f"{fade_in}fade=t=out:st={bd - fd:.3f}:d={fd:.3f}:alpha=1,"
+                 f"{fade_in}{fade_out}"
                  f"setpts=PTS-STARTPTS+{S:.3f}/TB[b{bi}]")
         # "slide": slides in from the right with an ease-out; anything else: soft fade
         ox = f"x='if(lt(t,{S + 0.28:.3f}),W*pow(1-(t-{S:.3f})/0.28,3),0)':y=0:" if trans == "slide" else ""
@@ -559,6 +576,10 @@ def render_final(job_dir: Path, base: Path, base_info: dict, out: Path, *, verti
             log(f"Doodles: {placed} drawn for {out.name}")
             if sfx_events:
                 sfx_events.sort()
+    # ---- explainer look: a fine film grain over everything, so speaker shots and paper graphics feel like one piece
+    if vox_mode:
+        g.append(f"{cur}noise=alls=7:allf=t[vxg]")
+        cur = "[vxg]"
     # ---- progress bar
     if cfg.get("progress_bar", True):
         ph = max(6, H // 140)
@@ -593,7 +614,8 @@ def render_final(job_dir: Path, base: Path, base_info: dict, out: Path, *, verti
     args = [*inputs, "-filter_complex", graph, "-map", "[vout]", "-map", "[aout]",
             *ffmpeg.video_codec_args(cfg.get("encoder", "auto"), "final"), "-r", f"{fps:.3f}",
             "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-movflags", "+faststart", "-t", f"{dur:.3f}", str(out)]
-    log(f"Rendering {out.name} ({W}x{H}, {dur:.1f}s, {n_b} b-roll)")
+    log(f"Rendering {out.name} ({W}x{H}, {dur:.1f}s, {n_b} b-roll" + (f", {n_vox} explainer graphics" if n_vox else "")
+        + ")")
     ffmpeg.run(args, cwd=job_dir, duration=dur, on_progress=lambda p: on_progress(p, f"Rendering {out.name}"),
                log=log)
     return out

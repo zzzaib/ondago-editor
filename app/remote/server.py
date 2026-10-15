@@ -41,7 +41,7 @@ OPTION_KEYS = ["language", "remove_fillers", "remove_silences", "remove_retakes"
                "caption_script", "broll_mode", "broll_missing_action", "zoom_style", "rotation", "callouts",
                "progress_bar", "smooth_zoom", "sfx", "color_grade", "music", "output_youtube", "output_reel",
                "reel_mode", "review_before_render", "doodles", "doodle_density", "doodle_outline", "doodle_ai",
-               "callout_doodles", "broll_layout", "max_pause", "preset"]
+               "callout_doodles", "broll_layout", "max_pause", "preset", "vox_graphics", "vox_density"]
 
 
 def _safe_job(name: str) -> Job:
@@ -504,6 +504,17 @@ def create_app(server: RemoteServer) -> FastAPI:
                 "online_broll": online.available(cfg), "video_keys": online.has_video_keys(cfg),
                 "urls": server.urls(), "tasks": MANAGER.snapshot(20)}
 
+    @app.get("/api/system", dependencies=[Depends(authed)])
+    def system(refresh: int = 0):
+        """What this computer can run, feature by feature (same report as the desktop 'This computer' page)."""
+        from ..core import capabilities
+        r = capabilities.report(settings.load(), refresh=bool(refresh))
+        m = r["machine"]
+        return {"verdict": r["verdict"], "mood": r["mood"], "limits": r["limits"],
+                "machine": {k: m.get(k) for k in ("os", "cpu", "cores", "ram_gb", "gpus", "vram_gb", "apple_silicon")},
+                "features": [{k: f[k] for k in ("id", "title", "what", "status", "level", "engine", "note", "tip")}
+                             for f in r["features"]]}
+
     @app.put("/api/keys", dependencies=[Depends(authed)])
     async def save_keys(req: Request):
         """Free stock-footage API keys can be pasted from the phone (write-only: never sent back)."""
@@ -744,7 +755,7 @@ def create_app(server: RemoteServer) -> FastAPI:
             job.save()
         elif op == "skip":
             slot["status"], slot["user_locked"] = ("skipped" if slot["status"] != "skipped" else
-                                                   ("resolved" if slot.get("file") or slot.get("kind") == "graphic"
+                                                   ("resolved" if slot.get("file") or slot.get("kind") in ("graphic", "vox")
                                                     else "needs_input")), True
             job.save()
         elif op == "remove":

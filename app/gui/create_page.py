@@ -196,7 +196,7 @@ class CreateTab(QScrollArea):
         for i, p in enumerate(presets_mod.PRESETS):
             c = PresetCard(p)
             c.clicked.connect(self.apply_preset)
-            grid.addWidget(c, 0, i)
+            grid.addWidget(c, i // 3, i % 3)
             self.cards[p["id"]] = c
         col.addLayout(grid)
 
@@ -337,6 +337,14 @@ class CreateTab(QScrollArea):
         self.c_music = chk("Background music", "music")
         for w in (self.c_push, self.c_grade, self.c_call, self.c_bar, self.c_sfx, self.c_music):
             v.addWidget(w)
+        self.c_vox = chk("Vox-style explainer graphics", "vox_graphics")
+        self.c_vox.setToolTip("Paper-texture title cards, highlighted quotes, counting numbers, maps and timelines "
+                              "(12 fps cut-out look). Runs on any computer.")
+        v.addWidget(self.c_vox)
+        self.vdens = combo([("A few", "low"), ("Some", "medium"), ("Lots", "high")], s.get("vox_density", "medium"))
+        row(v, "Explainer graphics", self.vdens)
+        self.vdens.setEnabled(self.c_vox.isChecked())
+        self.c_vox.toggled.connect(self.vdens.setEnabled)
         grid.addWidget(fr, 0, 1)
 
         fr, v = group("✨  Doodles")
@@ -408,6 +416,7 @@ class CreateTab(QScrollArea):
             "doodles": self.c_dood.isChecked(), "doodle_density": self.dens.currentData(),
             "doodle_outline": self.c_outline.isChecked(), "callout_doodles": self.c_cdood.isChecked(),
             "doodle_ai": self.c_ai.isChecked() and self.ai_ok, "rotation": self.rot.currentData(),
+            "vox_graphics": self.c_vox.isChecked(), "vox_density": self.vdens.currentData(),
             "language": self.lang.currentData(), "output_youtube": self.o_yt.isChecked(),
             "output_reel": self.o_reel.isChecked(), "reel_mode": self.reel_mode.currentData(),
             "review_before_render": self.c_review.isChecked(),
@@ -420,12 +429,12 @@ class CreateTab(QScrollArea):
         cb = {"remove_fillers": self.c_fill, "remove_silences": self.c_sil, "remove_retakes": self.c_ret,
               "smooth_zoom": self.c_push, "callouts": self.c_call, "progress_bar": self.c_bar, "sfx": self.c_sfx,
               "color_grade": self.c_grade, "music": self.c_music, "doodles": self.c_dood,
-              "doodle_outline": self.c_outline, "callout_doodles": self.c_cdood}
+              "doodle_outline": self.c_outline, "callout_doodles": self.c_cdood, "vox_graphics": self.c_vox}
         for k, w in cb.items():
             if k in p:
                 w.setChecked(bool(p[k]))
         for k, w in (("zoom_style", self.zoom), ("broll_mode", self.broll), ("broll_missing_action", self.missing),
-                     ("broll_layout", self.blayout), ("doodle_density", self.dens)):
+                     ("broll_layout", self.blayout), ("doodle_density", self.dens), ("vox_density", self.vdens)):
             if k in p:
                 w.setCurrentIndex(max(0, w.findData(p[k])))
         self.cap.setCurrentIndex(max(0, self.cap.findData(p.get("caption_style", "bold_pop") if p.get("captions", True)

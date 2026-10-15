@@ -182,6 +182,17 @@ def analyze(job: Job, cfg: dict, log: Log, progress: Prog) -> None:
     p = st.sub("broll")
     slots = build_slots(visuals, tr, info["duration"], excluded) if cfg.get("broll_mode", "both") != "off" else []
     plan["broll"] = BrollResolver(cfg, job.dir, log, planner).resolve(slots, on_progress=lambda x, m="": p(x * 0.9, m))
+    if cfg.get("vox_graphics", False) and segs:
+        from . import vox_plan
+        p(0.88, "Planning explainer graphics (Vox style)")
+        vs = vox_plan.build_slots(visuals.get("explainer", []), tr, info["duration"], excluded, plan["broll"], cfg,
+                                  visuals.get("callouts", []))
+        plan["broll"] = vox_plan.merge(plan["broll"], vs)
+        vox_plan.make_previews(plan["broll"], job.dir)
+        kinds = {}
+        for v in vs:
+            kinds[v["vox"]["kind"]] = kinds.get(v["vox"]["kind"], 0) + 1
+        log(f"Explainer graphics: {len(vs)} ({', '.join(f'{n} {k}' for k, n in kinds.items()) or 'none fit'})")
     if any(d.get("shape") == "custom" for d in plan.get("doodles", [])):
         from .doodles import generate_custom
         p(0.9, "Drawing AI doodles (FLUX)")
@@ -436,7 +447,7 @@ def _split_doodles(broll: list[dict], t0: float, t1: float, geo: dict, lm: str, 
     from .doodles import HEURISTIC
     out = []
     for i, b in enumerate(broll):
-        if b.get("style") != "split" or not (t0 <= b["t0"] < t1) or b["t1"] - b["t0"] < 1.4:
+        if b.get("style") != "split" or not (t0 <= b["t0"] < t1) or b["t1"] - b["t0"] < 1.4 or b.get("kind") == "vox":
             continue
         s, e = b["t0"] - t0 + 0.35, min(b["t1"], t1) - t0 - 0.25
         if lm == "pip":

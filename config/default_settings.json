@@ -28,6 +28,8 @@
   "doodle_outline": true,
   "doodle_ai": false,
   "callout_doodles": true,
+  "vox_graphics": false,
+  "vox_density": "medium",
   "broll_layout": "auto",
   "preset": "talking",
   "smooth_zoom": true,
