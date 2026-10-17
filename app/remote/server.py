@@ -34,6 +34,28 @@ PARTIAL = UPLOADS / ".partial"
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".m4v", ".avi", ".webm"}
 MEDIA_EXT = VIDEO_EXT | {".jpg", ".jpeg", ".png", ".webp"}
 MAX_CHUNK = 16 * 1024 * 1024
+
+
+def _code_stamp() -> float:
+    """Newest modification time of OnDaGo's own code (app/**/*.py)."""
+    root = Path(__file__).resolve().parents[1]
+    try:
+        return max(f.stat().st_mtime for f in root.rglob("*.py"))
+    except ValueError:
+        return 0.0
+
+
+CODE_AT_START = _code_stamp()
+_restart_cache = [0.0, False]
+
+
+def restart_needed() -> bool:
+    """True when OnDaGo's files were updated after it started: Python keeps running the old code until the whole
+    app is quit and reopened (turning only the phone app off and on is not enough)."""
+    now = time.time()
+    if now - _restart_cache[0] > 15:
+        _restart_cache[:] = [now, _code_stamp() > CODE_AT_START + 1]
+    return _restart_cache[1]
 COOKIE = "ondago_token"
 
 # settings the phone may change per edit (and save as defaults)
@@ -204,6 +226,9 @@ class RemoteServer:
         if cfg.get("tailscale_https"):
             threading.Thread(target=self._ts_serve, daemon=True).start()
         self.log(f"Phone app running on port {self.port}")
+        if restart_needed():
+            self.log("OnDaGo was updated while it was open. Quit OnDaGo completely and open it again - turning only "
+                     "the phone app off and on keeps running the old version.")
         return True, "started"
 
     def stop(self):
@@ -393,7 +418,8 @@ def create_app(server: RemoteServer) -> FastAPI:
                     return
 
             t_req = time.time()
-            timed = scope["method"] == "PUT" and path.startswith("/api/uploads/")
+            timed = scope["method"] in ("PUT", "POST") and path.startswith("/api/uploads/") and path.count("/") >= 3 \
+                and not path.endswith("/complete")
 
             async def send2(msg):
                 if msg["type"] == "http.response.start":
@@ -498,7 +524,8 @@ def create_app(server: RemoteServer) -> FastAPI:
         from ..upload import youtube
         cfg = settings.load()
         ai_ok, ai_why = _ai_status()
-        return {"version": VERSION, "device": socket.gethostname(), "gpu": _gpu_name(), "busy": MANAGER.busy(),
+        return {"version": VERSION, "restart_needed": restart_needed(),
+                "device": socket.gethostname(), "gpu": _gpu_name(), "busy": MANAGER.busy(),
                 "ai_images": ai_ok, "ai_reason": ai_why, "youtube_connected": youtube.connected(),
                 "instagram_ready": bool(cfg.get("instagram_user_id") and cfg.get("instagram_access_token")),
                 "online_broll": online.available(cfg), "video_keys": online.has_video_keys(cfg),
@@ -606,6 +633,19 @@ def create_app(server: RemoteServer) -> FastAPI:
         if not meta.exists():
             raise HTTPException(404, "unknown upload")
         return json.loads(meta.read_text()), meta, PARTIAL / f"{uid}.part"
+
+    @app.get("/api/uploads/{uid}", dependencies=[Depends(authed)])
+    def upload_status(uid: str):
+        """How much of an upload the laptop has. The phone asks this right after sending a chunk instead of
+        waiting for the upload's own reply, which iPhone Safari often never delivers on a direct Wi-Fi link."""
+        m, meta, part = _upload_meta(uid)
+        if m.get("done"):
+            return {"received": m["size"], "done": True}
+        return {"received": part.stat().st_size if part.exists() else 0}
+
+    @app.post("/api/uploads/{uid}/chunk", dependencies=[Depends(authed)])
+    async def upload_chunk_post(uid: str, req: Request, offset: int = 0):
+        return await upload_chunk(uid, req, offset)
 
     @app.put("/api/uploads/{uid}", dependencies=[Depends(authed)])
     async def upload_chunk(uid: str, req: Request, offset: int = 0):

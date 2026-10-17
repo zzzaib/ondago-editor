@@ -1,3 +1,14 @@
+## OnDaGo Editor v2.1.1: fast, reliable phone uploads on iPhone
+
+- Uploads no longer wait for the laptop's reply to each piece. iPhone Safari on a direct Wi-Fi link often never
+  delivers that reply, which made uploads crawl. The phone now confirms each piece with a tiny check and moves on
+  right away (tested: full speed even when every reply is lost).
+- A piece that never arrives is re-sent after 6 s instead of waiting and shrinking; quick retries on Wi-Fi.
+- Keeps the iPhone screen from auto-locking during an upload (it pauses uploads when locked), and an upload
+  paused in the background continues the moment you come back.
+- The laptop now tells you (phone + Log) when OnDaGo was updated but is still running the old version: quit it
+  completely and reopen. Turning only the phone app off and on keeps the old code.
+
 ## OnDaGo Editor v2.1.0: Vox-style explainers + "This computer" page
 
 ### What's new

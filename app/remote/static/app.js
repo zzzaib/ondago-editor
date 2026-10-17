@@ -28,9 +28,9 @@ const fmt = t => { t = Math.max(0, Math.floor(t || 0)); const m = Math.floor(t /
   return m >= 60 ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`; };
 const mb = b => b > 1e9 ? (b / 1e9).toFixed(2) + " GB" : (b / 1e6).toFixed(1) + " MB";
 let toastTimer;
-function toast(msg, bad) {
+function toast(msg, bad, ms) {
   const t = $("#toast"); t.textContent = msg; t.className = "show" + (bad ? " bad" : "");
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.className = "", 3200);
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.className = "", ms || 3200);
 }
 function sw(checked, onchange, disabled) {
   const i = h("input", { type: "checkbox", disabled });
@@ -196,7 +196,9 @@ function netBanner() {
 
 async function loadStatus() {
   try { S.status = await api("GET", "/api/status"); for (const t of S.status.tasks) S.tasks[t.job] = S.tasks[t.job] && S.tasks[t.job].id > t.id ? S.tasks[t.job] : t;
-    setDev(S.status.busy ? "busy" : "on", S.status.device + (S.status.gpu ? " · " + S.status.gpu.replace("NVIDIA GeForce ", "") : "")); }
+    setDev(S.status.busy ? "busy" : "on", S.status.device + (S.status.gpu ? " · " + S.status.gpu.replace("NVIDIA GeForce ", "") : ""));
+    if (S.status.restart_needed && !S.warnedRestart) { S.warnedRestart = true;
+      toast("OnDaGo on your laptop was updated: quit it completely and open it again to use the new version.", true, 9000); } }
   catch (e) { if (e.status !== 401) toast(e.message, true); }
 }
 
@@ -405,64 +407,65 @@ async function laptopBrowser() {
   return box;
 }
 
-// resumable chunked upload (works through Cloudflare's 100 MB request limit, survives flaky mobile data)
-// one chunk with byte-level progress; aborted if nothing moves for `stallMs` (a dead Wi-Fi/tunnel connection
-// would otherwise hang forever)
-function putChunk(url, blob, fast, onBytes, stallMs) {
-  return new Promise((resolve, reject) => {
-    const x = new XMLHttpRequest();
-    x.open("PUT", fast ? fast.base + url : url);
-    x.setRequestHeader("X-OnDaGo", "1");
-    x.setRequestHeader("Content-Type", "application/octet-stream");
-    if (fast) x.setRequestHeader("Authorization", "Bearer " + fast.token);
-    const t0 = Date.now(); let last = t0, sent = 0, upDone = 0;
-    let replyLost = false;
-    const dog = setInterval(() => {
-      // all bytes sent but no reply after 4 s: the laptop almost certainly has the chunk - ask it instead of waiting
-      if (upDone && Date.now() - upDone > 4000) { replyLost = true; x.abort(); }
-      else if (Date.now() - last > stallMs) x.abort();
-    }, 500);
-    const done = () => clearInterval(dog);
-    const why = err => { err.diag = { secs: (Date.now() - t0) / 1000, sent, size: blob.size, upDone: upDone ? (upDone - t0) / 1000 : -1,
-      quiet: (Date.now() - last) / 1000, status: x.status, ready: x.readyState }; err.replyLost = replyLost; return err; };
-    x.upload.onprogress = e => { last = Date.now(); sent = e.loaded; onBytes(e.loaded); };
-    x.upload.onload = () => { upDone = Date.now(); last = Date.now(); };
-    x.onload = () => {
-      done(); let j = null; try { j = JSON.parse(x.responseText); } catch (e) { /* not json */ }
-      if (x.status === 200 || (x.status === 409 && j && "received" in j)) resolve(j);
-      else { if (x.status === 401) { S.authed = false; } reject(why(new ApiError(x.status, (j && j.detail) || x.statusText || "upload failed"))); }
-    };
-    x.onerror = () => { done(); reject(why(new ApiError(0, "connection dropped"))); };
-    x.onabort = () => { done(); reject(why(new ApiError(0, replyLost ? "reply lost" : "connection stalled"))); };
-    x.send(blob);
-  });
-}
-
-// Safari (iPhone / iPad / Mac) loses the reply to big XMLHttpRequest uploads on a direct Wi-Fi connection,
-// so there each chunk is sent with fetch() instead (no byte-level progress, but chunks are small).
+// ------------------------------------------------------------------ uploads
+// Resumable chunked upload (works through Cloudflare's 100 MB request limit, survives flaky mobile data).
+// iPhone Safari on a direct Wi-Fi connection often never delivers the laptop's reply to a big upload request,
+// even though the laptop got every byte. So we never wait for that reply: as soon as the phone has sent the
+// chunk, it asks the laptop with a tiny separate request "how much do you have?" and moves on.
 const UA = navigator.userAgent;
 const APPLE_WEBKIT = /iP(hone|ad|od)/.test(UA) || (/Safari\//.test(UA) && !/Chrome|Chromium|CriOS|Android|Edg/.test(UA));
 
-function fetchChunk(url, blob, fast, onBytes, timeoutMs) {
-  const ctl = new AbortController(); const t0 = Date.now();
-  const timer = setTimeout(() => ctl.abort(), timeoutMs);
-  const headers = { "X-OnDaGo": "1", "Content-Type": "application/octet-stream" };
-  if (fast) headers.Authorization = "Bearer " + fast.token;
-  return fetch(fast ? fast.base + url : url, { method: "PUT", body: blob, headers, signal: ctl.signal,
+function received(id, fast) {  // tiny GET: how many bytes of this upload the laptop has
+  const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), 4000);
+  const headers = {}; if (fast) headers.Authorization = "Bearer " + fast.token;
+  return fetch((fast ? fast.base : "") + `/api/uploads/${id}?_=${Date.now()}`, { headers, signal: ctl.signal,
     credentials: fast ? "omit" : "same-origin", cache: "no-store" })
-    .then(async r => {
-      clearTimeout(timer);
-      let j = null; try { j = await r.json(); } catch (e) { /* not json */ }
-      if (r.status === 200 || (r.status === 409 && j && "received" in j)) { onBytes(blob.size); return j; }
-      if (r.status === 401) S.authed = false;
-      throw new ApiError(r.status, (j && j.detail) || r.statusText || "upload failed");
-    }, e => {
-      clearTimeout(timer);
-      const err = new ApiError(0, ctl.signal.aborted ? "reply lost" : "connection dropped");
-      err.replyLost = true;  // ask the laptop how much it has, then continue
-      err.diag = { secs: (Date.now() - t0) / 1000, size: blob.size, via: "fetch", name: e && e.name };
-      throw err;
-    });
+    .then(r => r.ok ? r.json() : null).then(j => (j && typeof j.received === "number") ? j.received : -1, () => -1)
+    .finally(() => clearTimeout(timer));
+}
+
+// one chunk: resolves with the laptop's byte count. Byte-level progress; confirmed by polling once sent;
+// aborted if nothing moves for `stallMs`.
+function sendChunk(id, off, blob, fast, onBytes, stallMs) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest(); const end = off + blob.size;
+    x.open("POST", `${fast ? fast.base : ""}/api/uploads/${id}/chunk?offset=${off}`);
+    x.setRequestHeader("X-OnDaGo", "1");
+    x.setRequestHeader("Content-Type", "application/octet-stream");
+    if (fast) x.setRequestHeader("Authorization", "Bearer " + fast.token);
+    const t0 = Date.now(); let last = t0, sent = 0, upDone = 0, settled = false, polling = false, polls = 0;
+    const finish = (ok, val) => {
+      if (settled) return; settled = true; clearInterval(dog);
+      if (ok) { onBytes(blob.size); resolve(val); try { if (x.readyState !== 4) x.abort(); } catch (e) { /* ignore */ } }
+      else { try { x.abort(); } catch (e) { /* ignore */ } reject(val); }
+    };
+    const fail = (msg, status) => { const err = new ApiError(status || 0, msg);
+      err.diag = { secs: (Date.now() - t0) / 1000, sent, size: blob.size, upDone: upDone ? (upDone - t0) / 1000 : -1,
+        quiet: (Date.now() - last) / 1000, status: x.status, ready: x.readyState, polls }; return err; };
+    const poll = async () => {  // does the laptop already have the whole chunk?
+      if (polling || settled) return; polling = true; polls++;
+      const n = await received(id, fast); polling = false;
+      if (!settled && n >= end) finish(true, { received: n, confirmed: true });
+    };
+    const dog = setInterval(() => {
+      const now = Date.now();
+      if (upDone && now - upDone > 250) poll();               // sent: confirm with a tiny request, don't wait for the reply
+      else if (!upDone && now - last > 3000 && sent > 0) poll(); // progress events can stop early on iOS - ask anyway
+      // nothing moving, or everything sent but the laptop still doesn't have it after 6 s: resend
+      if (now - last > stallMs || (upDone && now - upDone > 6000)) {
+        poll().then(() => { if (!settled) finish(false, fail(upDone ? "chunk never arrived" : "connection stalled")); });
+      }
+    }, 250);
+    x.upload.onprogress = e => { last = Date.now(); sent = e.loaded; onBytes(e.loaded); };
+    x.upload.onload = () => { upDone = Date.now(); last = Date.now(); };
+    x.onload = () => {
+      let j = null; try { j = JSON.parse(x.responseText); } catch (e) { /* not json */ }
+      if (x.status === 200 || (x.status === 409 && j && "received" in j)) finish(true, j);
+      else { if (x.status === 401) S.authed = false; finish(false, fail((j && j.detail) || x.statusText || "upload failed", x.status)); }
+    };
+    x.onerror = () => { poll().then(() => { if (!settled) finish(false, fail("connection dropped")); }); };
+    x.send(blob);
+  });
 }
 
 // upload diagnostics -> the laptop's log (Log page), so connection problems can be seen and fixed
@@ -472,12 +475,44 @@ function report(msg) {
   catch (e) { /* ignore */ }
 }
 
+// keeps an iPhone from auto-locking during an upload (Safari pauses uploads when the screen locks).
+// The proper Wake Lock API only works on https, so on the Wi-Fi address a tiny silent looping video does it.
+const awake = { v: null, lock: null };
+function keepAwake(on) {
+  try {
+    if (on) {
+      if (navigator.wakeLock && window.isSecureContext) {
+        navigator.wakeLock.request("screen").then(l => { awake.lock = l; }, () => {});
+      }
+      if (!awake.v) {
+        const v = document.createElement("video");
+        v.setAttribute("playsinline", ""); v.setAttribute("muted", ""); v.muted = true; v.loop = true;
+        v.src = "/static/keepawake.mp4"; v.style.cssText = "position:fixed;width:1px;height:1px;opacity:0.01;pointer-events:none;bottom:0;left:0";
+        document.body.appendChild(v); awake.v = v;
+      }
+      const pr = awake.v.play(); if (pr && pr.catch) pr.catch(() => {});
+    } else {
+      if (awake.v) { awake.v.pause(); awake.v.remove(); awake.v = null; }
+      if (awake.lock) { awake.lock.release().catch(() => {}); awake.lock = null; }
+    }
+  } catch (e) { /* best effort */ }
+}
+
+// waits `ms`, but wakes up at once when you come back to the app (iPhone froze the page in the background)
+const nap = ms => new Promise(r => {
+  const t = setTimeout(done, ms);
+  function done() { clearTimeout(t); document.removeEventListener("visibilitychange", vis); r(); }
+  function vis() { if (!document.hidden) done(); }
+  document.addEventListener("visibilitychange", vis);
+});
+
 // resumable chunked upload: live speed + time left, adaptive chunk size, stall watchdog, auto-resume
 async function uploadFile(file, onprog) {
   const key = (file.name + file.size + file.lastModified).replace(/[^A-Za-z0-9]/g, "").slice(-60);
   let fast = S.net.fast, fastFails = 0;
   const route = () => fast ? "⚡ Wi-Fi direct" : S.net.via === "lan" ? "⚡ Wi-Fi" : S.net.via === "tailscale" ? "🔒 Tailscale" :
     S.net.via === "public" ? "🌍 Internet" : "";
+  const local = () => !!fast || S.net.via === "lan" || S.net.via === "local";
   const call = async (m, u, b) => {
     if (fast) { try { return await api(m, u, b, undefined, fast); } catch (e) { if (e.status) throw e; fast = null; } }
     return api(m, u, b);
@@ -487,7 +522,8 @@ async function uploadFile(file, onprog) {
   const id = init.id; let off = init.received || 0;
   if (init.done) { onprog(1, "Already on the laptop"); return id; }
   if (off) toast(`Resuming at ${mb(off)}`);
-  let CH = 4 * 1024 * 1024; const MAXC = 16 * 1024 * 1024, MINC = 1024 * 1024;
+  const MAXC = 16 * 1024 * 1024, MINC = 1024 * 1024;
+  let CH = local() ? 8 * 1024 * 1024 : 4 * 1024 * 1024;
   let tries = 0, samples = [[Date.now(), off]];
   const stats = cur => {
     const now = Date.now(); samples.push([now, cur]); while (samples.length > 2 && now - samples[0][0] > 4000) samples.shift();
@@ -496,47 +532,41 @@ async function uploadFile(file, onprog) {
     const eta = left > 90 ? `${Math.round(left / 60)} min left` : left > 0 ? `${Math.max(1, Math.round(left))} s left` : "";
     onprog(cur / file.size, `${mb(cur)} of ${mb(file.size)} · ${(sp / 1e6).toFixed(1)} MB/s${eta ? " · " + eta : ""} · ${route()}`);
   };
-  let lock = null; try { lock = await navigator.wakeLock?.request("screen"); } catch (e) { /* only on https */ }
-  report(`upload start ${file.name} ${mb(file.size)} via=${S.net.via} fast=${fast ? fast.base : "no"} method=${APPLE_WEBKIT ? "fetch" : "xhr"} page=${location.origin} ua=${navigator.userAgent.slice(0, 90)}`);
-  let okN = 0, okSecs = 0, lostReplies = 0, rate = 4e6;  // bytes/s, learned from finished chunks
-  try {
-    while (off < file.size) {
-      const end = Math.min(file.size, off + CH);
-      const t = Date.now();
-      try {
-        const blob = file.slice(off, end);
-        const r = APPLE_WEBKIT
-          ? await fetchChunk(`/api/uploads/${id}?offset=${off}`, blob, fast, n => stats(off + n),
-              Math.min(60000, Math.max(3000, 2500 + blob.size / rate * 1500)))   // ~1.5x the time this link needs
-          : await putChunk(`/api/uploads/${id}?offset=${off}`, blob, fast, n => stats(off + n), 20000);
-        off = r.received; tries = 0;
-        const secs = (Date.now() - t) / 1000;   // grow chunks on fast links, shrink on slow ones
-        okN++; okSecs += secs;
-        rate = Math.min(40e6, Math.max(1e6, blob.size / Math.max(0.05, secs)));
-        if (okN % 5 === 0) { report(`upload ok x5: avg ${(okSecs / 5).toFixed(2)}s per chunk, chunk ${mb(CH)}, at ${mb(off)}, fast=${fast ? "yes" : "no"}`); okSecs = 0; }
-        if (secs < 3 && CH < MAXC) CH *= 2; else if (secs > 12 && CH > MINC) CH = Math.max(MINC, CH / 2);
-        stats(off);
-      } catch (e) {
-        if (e.replyLost) {  // chunk was sent completely: just ask where the laptop is and carry on at full speed
-          lostReplies++;
-          if (lostReplies <= 3 || lostReplies % 20 === 0) report(`upload reply lost x${lostReplies} at ${mb(off)} chunk ${mb(CH)} ${JSON.stringify(e.diag || {})}`);
-          try { const again = await call("POST", "/api/uploads", { name: file.name, size: file.size, key }); off = again.received || off; stats(off); continue; }
-          catch (e2) { /* fall through to the normal retry */ }
-        }
-        report(`upload FAIL at ${mb(off)} chunk ${mb(CH)} fast=${fast ? "yes" : "no"} try ${tries + 1}: ${e.message} ${JSON.stringify(e.diag || {})}`);
-        if (e.status === 401) { render(); throw e; }
-        if (e.status && e.status !== 409 && e.status < 500) throw e;
-        if (fast && ++fastFails >= 2) { fast = null; toast("Wi-Fi direct path lost - continuing through the normal connection"); }
-        if (++tries > 10) throw new ApiError(0, "Upload keeps failing. Check the connection and tap Start again - it resumes.");
-        CH = Math.max(MINC, CH / 2);
-        onprog(off / file.size, document.hidden ? "Paused - the phone stopped the upload in the background. Come back to this screen to continue."
-          : `Connection hiccup (${e.message}) - retrying ${tries}/10…`);
-        await new Promise(r => setTimeout(r, Math.min(10000, 800 * 2 ** Math.min(tries, 4))));
-        try { const again = await call("POST", "/api/uploads", { name: file.name, size: file.size, key }); off = again.received || off; } catch (e2) { /* next round */ }
-        samples = [[Date.now(), off]];
+  const t_start = Date.now(), off_start = off;
+  report(`upload v3 start ${file.name} ${mb(file.size)} at ${mb(off)} via=${S.net.via} fast=${fast ? fast.base : "no"} page=${location.origin} ua=${UA.slice(0, 80)}`);
+  let okN = 0, okSecs = 0, confirmed = 0;
+  while (off < file.size) {
+    const end = Math.min(file.size, off + CH);
+    const t = Date.now();
+    try {
+      const r = await sendChunk(id, off, file.slice(off, end), fast, n => stats(off + n), local() ? 12000 : 25000);
+      if (r.confirmed) confirmed++;
+      off = r.received; tries = 0;
+      const secs = (Date.now() - t) / 1000;   // grow chunks on fast links, shrink on slow ones
+      okN++; okSecs += secs;
+      if (okN === 3 || okN % 10 === 0) {
+        report(`upload ok x${okN}: last ${okSecs.toFixed(1)}s for ${okN === 3 ? 3 : 10} chunks, chunk ${mb(CH)}, at ${mb(off)}, ` +
+               `replies via check ${confirmed}/${okN}, fast=${fast ? "yes" : "no"}`);
+        okSecs = 0;
       }
+      if (secs < 2.5 && CH < MAXC) CH *= 2; else if (secs > 15 && CH > MINC) CH = Math.max(MINC, CH / 2);
+      stats(off);
+    } catch (e) {
+      report(`upload FAIL at ${mb(off)} chunk ${mb(CH)} fast=${fast ? "yes" : "no"} try ${tries + 1} hidden=${document.hidden}: ${e.message} ${JSON.stringify(e.diag || {})}`);
+      if (e.status === 401) { render(); throw e; }
+      if (e.status && e.status !== 409 && e.status < 500) throw e;
+      if (fast && ++fastFails >= 2) { fast = null; toast("Wi-Fi direct path lost - continuing through the normal connection"); }
+      if (++tries > 12) throw new ApiError(0, "Upload keeps failing. Check the connection and tap Start again - it resumes.");
+      if (tries >= 3) CH = Math.max(MINC, CH / 2);
+      onprog(off / file.size, document.hidden ? "Paused - the phone stopped the upload in the background. Come back to this screen to continue."
+        : `Connection hiccup (${e.message}) - retrying ${tries}/12…`);
+      await nap(tries <= 2 ? 300 : Math.min(5000, 500 * 2 ** (tries - 2)));
+      try { const again = await call("POST", "/api/uploads", { name: file.name, size: file.size, key }); off = again.received || off; } catch (e2) { /* next round */ }
+      samples = [[Date.now(), off]];
     }
-  } finally { try { lock && lock.release(); } catch (e) { /* ignore */ } }
+  }
+  const secs = (Date.now() - t_start) / 1000;
+  report(`upload v3 done ${file.name}: ${mb(off - off_start)} in ${secs.toFixed(0)}s = ${((off - off_start) / 1e6 / Math.max(1, secs)).toFixed(1)} MB/s, replies via check ${confirmed}/${okN}`);
   onprog(1, "Finishing…");
   await call("POST", `/api/uploads/${id}/complete`);
   return id;
@@ -551,13 +581,16 @@ async function startEdit() {
   try {
     let source;
     if (S.pick.file) {
+      keepAwake(true);  // must start inside the tap, or iPhone won't allow it
       const box = $("#upl"); const bar = h("i"); const pct = h("b", {}, "0%");
       const msg = h("div", { class: "small muted", style: "margin-top:6px" }, "Starting upload…");
       box.replaceChildren(h("div", { class: "card" }, h("div", { class: "row" }, h("h3", { class: "grow", style: "margin:0" }, "Uploading to your laptop"), pct),
         h("div", { class: "bar", style: "margin-top:10px" }, bar), msg,
-        h("p", { class: "small muted" }, "Keep this screen open and unlocked (iPhone: Safari pauses uploads in the background). If it stops, tap Start again - it resumes where it left off.")));
+        h("p", { class: "small muted" }, "Keep OnDaGo open on screen until this finishes: an iPhone pauses uploads when you switch apps or lock the phone. It continues by itself when you come back, and if you close it, tap Start again - it resumes where it left off.")));
       box.scrollIntoView({ behavior: "smooth", block: "center" });
-      const id = await uploadFile(S.pick.file, (p, m) => { bar.style.width = (p * 100).toFixed(1) + "%"; pct.textContent = Math.floor(p * 100) + "%"; msg.textContent = m; });
+      let id;
+      try { id = await uploadFile(S.pick.file, (p, m) => { bar.style.width = (p * 100).toFixed(1) + "%"; pct.textContent = Math.floor(p * 100) + "%"; msg.textContent = m; }); }
+      finally { keepAwake(false); }
       source = { upload: id };
     } else source = { root: S.pick.root, path: S.pick.path };
     const j = await api("POST", "/api/jobs", { source, options: opts, save_defaults: $("#savedef").checked });

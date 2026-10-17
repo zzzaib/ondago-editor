@@ -1,5 +1,5 @@
 // Caches only the app shell so the phone app opens instantly. API calls and videos always go to the laptop.
-const SHELL = "ondago-shell-v2.1.0";
+const SHELL = "ondago-shell-v2.1.1";
 const FILES = ["/", "/static/app.css", "/static/app.js", "/static/icon-192.png", "/manifest.webmanifest"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(SHELL).then(c => c.addAll(FILES))); self.skipWaiting(); });
 self.addEventListener("activate", e => {
@@ -8,7 +8,7 @@ self.addEventListener("activate", e => {
 });
 self.addEventListener("fetch", e => {
   const u = new URL(e.request.url);
-  if (e.request.method !== "GET" || u.pathname.startsWith("/api/") || u.pathname.startsWith("/media/")) return;
+  if (e.request.method !== "GET" || u.pathname.startsWith("/api/") || u.pathname.startsWith("/media/") || u.pathname.endsWith(".mp4")) return;
   e.respondWith(fetch(e.request).then(r => {
     const copy = r.clone();
     if (r.ok) caches.open(SHELL).then(c => c.put(e.request, copy));
