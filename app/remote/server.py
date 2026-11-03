@@ -63,7 +63,8 @@ OPTION_KEYS = ["language", "remove_fillers", "remove_silences", "remove_retakes"
                "caption_script", "broll_mode", "broll_missing_action", "zoom_style", "rotation", "callouts",
                "progress_bar", "smooth_zoom", "sfx", "color_grade", "music", "output_youtube", "output_reel",
                "reel_mode", "review_before_render", "doodles", "doodle_density", "doodle_outline", "doodle_ai",
-               "callout_doodles", "broll_layout", "max_pause", "preset", "vox_graphics", "vox_density"]
+               "callout_doodles", "broll_layout", "max_pause", "preset", "vox_graphics", "vox_density",
+               "text_behind", "screen_mode"]
 
 
 def _safe_job(name: str) -> Job:
@@ -342,7 +343,8 @@ def job_detail(job: Job) -> dict:
         "outlines": p.get("outlines", []),
         "callouts": [{"i": i, "s": c["s"], "text": c["text"], "enabled": c.get("enabled", True)}
                      for i, c in enumerate(p.get("callouts", []))],
-        "cuts": {"count": len(cuts), "seconds": round(sum(c["e"] - c["s"] for c in cuts), 1)},
+        "cuts": {"count": len(cuts), "seconds": round(sum((c["e"] - c["s"]) * (1 - 1 / c["speed"] if c.get("kind") == "speed"
+                                                                            else 1) for c in cuts), 1)},
         "thumbnails": [{"i": i, "url": _media_url(job, o.get("path"), "thumb", i)}
                        for i, o in enumerate(th.get("options", []))],
         "thumb_choice": th.get("choice", 0), "thumb_texts": m.get("thumbnail_texts", []),
@@ -601,6 +603,35 @@ def create_app(server: RemoteServer) -> FastAPI:
         return {"root": root, "path": "" if rel == "." else rel, "dirs": dirs, "files": files[:300]}
 
     # ---------------------------------------------------------- uploads (chunked, resumable)
+    # ---------------------------------------------------------- uploads
+    # Resumable, parallel: the phone sends several pieces at once, in any order. The laptop writes each piece
+    # at its offset and remembers which byte ranges it has (meta "ranges"), so a dropped piece is simply re-sent.
+    _locks: dict[str, threading.Lock] = {}
+
+    def _lock(uid: str) -> threading.Lock:
+        return _locks.setdefault(uid, threading.Lock())
+
+    def _merge(ranges: list[list[int]], a: int, b: int) -> list[list[int]]:
+        out: list[list[int]] = []
+        for s0, e0 in sorted(ranges + [[a, b]]):
+            if out and s0 <= out[-1][1]:
+                out[-1][1] = max(out[-1][1], e0)
+            else:
+                out.append([s0, e0])
+        return out
+
+    def _ranges(m: dict, part: Path) -> list[list[int]]:
+        if "ranges" in m:
+            return [list(r) for r in m["ranges"]]
+        n = part.stat().st_size if part.exists() else 0  # uploads started by an older version: one prefix
+        return [[0, n]] if n else []
+
+    def _prefix(ranges: list[list[int]]) -> int:
+        return ranges[0][1] if ranges and ranges[0][0] == 0 else 0
+
+    def _have(ranges: list[list[int]]) -> int:
+        return sum(e - s for s, e in ranges)
+
     @app.post("/api/uploads", dependencies=[Depends(authed)])
     async def upload_init(req: Request):
         b = await req.json()
@@ -616,15 +647,17 @@ def create_app(server: RemoteServer) -> FastAPI:
         uid = key or secrets.token_hex(8)
         meta = PARTIAL / f"{uid}.json"
         part = PARTIAL / f"{uid}.part"
-        if meta.exists():
-            m = json.loads(meta.read_text())
-            if m.get("size") == size and m.get("name") == name:
-                if m.get("done") and Path(m.get("path", "")).exists():
-                    return {"id": uid, "received": size, "done": True}
-                return {"id": uid, "received": part.stat().st_size if part.exists() else 0}
-        meta.write_text(json.dumps({"name": name, "size": size, "created": time.time()}))
-        part.write_bytes(b"")
-        return {"id": uid, "received": 0}
+        with _lock(uid):
+            if meta.exists():
+                m = json.loads(meta.read_text())
+                if m.get("size") == size and m.get("name") == name:
+                    if m.get("done") and Path(m.get("path", "")).exists():
+                        return {"id": uid, "received": size, "done": True, "ranges": [[0, size]]}
+                    r = _ranges(m, part)
+                    return {"id": uid, "received": _prefix(r), "have": _have(r), "ranges": r}
+            meta.write_text(json.dumps({"name": name, "size": size, "created": time.time(), "ranges": []}))
+            part.write_bytes(b"")
+        return {"id": uid, "received": 0, "have": 0, "ranges": []}
 
     def _upload_meta(uid: str) -> tuple[dict, Path, Path]:
         if not re.fullmatch(r"[A-Za-z0-9]{1,64}", uid):
@@ -636,12 +669,13 @@ def create_app(server: RemoteServer) -> FastAPI:
 
     @app.get("/api/uploads/{uid}", dependencies=[Depends(authed)])
     def upload_status(uid: str):
-        """How much of an upload the laptop has. The phone asks this right after sending a chunk instead of
+        """Which parts of an upload the laptop has. The phone asks this right after sending a piece instead of
         waiting for the upload's own reply, which iPhone Safari often never delivers on a direct Wi-Fi link."""
         m, meta, part = _upload_meta(uid)
         if m.get("done"):
-            return {"received": m["size"], "done": True}
-        return {"received": part.stat().st_size if part.exists() else 0}
+            return {"received": m["size"], "have": m["size"], "done": True, "ranges": [[0, m["size"]]]}
+        r = _ranges(m, part)
+        return {"received": _prefix(r), "have": _have(r), "ranges": r}
 
     @app.post("/api/uploads/{uid}/chunk", dependencies=[Depends(authed)])
     async def upload_chunk_post(uid: str, req: Request, offset: int = 0):
@@ -651,33 +685,42 @@ def create_app(server: RemoteServer) -> FastAPI:
     async def upload_chunk(uid: str, req: Request, offset: int = 0):
         m, meta, part = _upload_meta(uid)
         if m.get("done"):
-            return JSONResponse({"received": m["size"]}, status_code=409)
-        have = part.stat().st_size if part.exists() else 0
-        if offset != have:
-            return JSONResponse({"received": have}, status_code=409)
+            return JSONResponse({"received": m["size"], "have": m["size"]}, status_code=409)
+        if offset < 0 or offset >= m["size"]:
+            raise HTTPException(400, "bad offset")
         t_in = time.time()
-        t0 = time.time()
         data = await req.body()
-        secs = max(0.001, time.time() - t0)
+        secs = max(0.001, time.time() - t_in)
         if len(data) > MAX_CHUNK:
             raise HTTPException(413, "chunk too big")
-        if have + len(data) > m["size"]:
+        if offset + len(data) > m["size"]:
             raise HTTPException(400, "more data than announced")
 
         def write():
-            with open(part, "ab") as fh:
-                fh.write(data)
-        await run_in_threadpool(write)
+            with _lock(uid):
+                mm = json.loads(meta.read_text())
+                before = _ranges(mm, part)
+                mode = "r+b" if part.exists() else "wb"
+                with open(part, mode) as fh:
+                    fh.seek(offset)
+                    fh.write(data)
+                after = _merge(before, offset, offset + len(data))
+                mm["ranges"] = after
+                tmp = meta.with_suffix(".tmp")
+                tmp.write_text(json.dumps(mm))
+                tmp.replace(meta)
+                return _have(before), after
+        had, ranges = await run_in_threadpool(write)
         via, ip = _route(req)
-        got = have + len(data)
-        step = int(got * 10 / max(1, m["size"]))  # one log line per 10% (not per chunk)
-        if have == 0 or got >= m["size"] or step != int(have * 10 / max(1, m["size"])):
+        got = _have(ranges)
+        step = int(got * 10 / max(1, m["size"]))  # one log line per 10% (not per piece)
+        if had == 0 or got >= m["size"] or step != int(had * 10 / max(1, m["size"])):
             server.log(f"Phone upload {m['name']}: {got / 1e6:.1f} / {m['size'] / 1e6:.1f} MB  "
                        f"(+{len(data) / 1e6:.1f} MB in {secs:.1f}s = {len(data) / 1e6 / secs:.1f} MB/s, {via} {ip})")
         dt = time.time() - t_in
         if dt > 2:
-            server.log(f"Phone upload: slow chunk on the laptop side ({dt:.1f}s)")
-        return {"received": got}
+            server.log(f"Phone upload: slow piece on the laptop side ({dt:.1f}s)")
+        return {"received": _prefix(ranges), "have": got, "ranges": ranges if len(ranges) <= 64 else []}
 
     @app.post("/api/clientlog", dependencies=[Depends(authed)])
     async def client_log(req: Request):
@@ -694,13 +737,18 @@ def create_app(server: RemoteServer) -> FastAPI:
         m, meta, part = _upload_meta(uid)
         if m.get("done") and Path(m.get("path", "")).exists():
             return {"id": uid, "path_name": Path(m["path"]).name}
-        if not part.exists() or part.stat().st_size != m["size"]:
-            raise HTTPException(400, "upload incomplete")
-        dst = UPLOADS / f"{time.strftime('%Y%m%d_%H%M%S')}_{uid[:6]}" / m["name"]  # keeps the original file name
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        part.replace(dst)
-        m.update({"done": True, "path": str(dst)})
-        meta.write_text(json.dumps(m))
+        with _lock(uid):
+            m = json.loads(meta.read_text())
+            r = _ranges(m, part)
+            if not part.exists() or _prefix(r) < m["size"]:
+                raise HTTPException(400, "upload incomplete")
+            with open(part, "r+b") as fh:  # sparse writes may leave the file longer only if size changed
+                fh.truncate(m["size"])
+            dst = UPLOADS / f"{time.strftime('%Y%m%d_%H%M%S')}_{uid[:6]}" / m["name"]  # keeps the original name
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            part.replace(dst)
+            m.update({"done": True, "path": str(dst)})
+            meta.write_text(json.dumps(m))
         return {"id": uid, "path_name": dst.name}
 
     def _uploaded(uid: str) -> Path:
@@ -1076,11 +1124,11 @@ def _job_cfg(job: Job) -> dict:
 
 
 def _source_time(job: Job, t: float, frm: str) -> float:
-    from ..pipeline.timeline import Timeline, compute_keeps
+    from ..pipeline.timeline import timeline_for
     info = job.plan["media"]
     if frm == "reel" and job.plan.get("reel_range"):
         t += float(job.plan["reel_range"][0])
-    tl = Timeline(compute_keeps(info["duration"], job.plan.get("cuts", []), info["fps"]))
+    tl = timeline_for(job.plan)
     return max(0.0, min(info["duration"] - 0.5, tl.to_source(max(0.0, t))))
 
 

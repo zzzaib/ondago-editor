@@ -316,6 +316,10 @@ class CreateTab(QScrollArea):
         self.lang = combo([("Auto detect", "auto"), ("Hinglish", "hinglish"), ("English", "en"), ("Hindi", "hi"),
                            ("Urdu", "ur"), ("Spanish", "es"), ("German", "de"), ("French", "fr")], s.get("language", "auto"))
         row(v, "Language", self.lang)
+        self.screen = combo([("Auto-detect", "auto"), ("Always", "on"), ("Never", "off")], s.get("screen_mode", "auto"))
+        self.screen.setToolTip("Screen recordings / tutorials: silent parts where something happens on screen are "
+                               "played fast instead of cut, and zooms follow the action.")
+        row(v, "Screen recording", self.screen)
         v.addStretch()
         grid.addWidget(fr, 0, 0)
 
@@ -337,6 +341,10 @@ class CreateTab(QScrollArea):
         self.c_music = chk("Background music", "music")
         for w in (self.c_push, self.c_grade, self.c_call, self.c_bar, self.c_sfx, self.c_music):
             v.addWidget(w)
+        self.c_behind = chk("Big titles behind you", "text_behind")
+        self.c_behind.setToolTip("Some pop-up texts become big titles that appear BEHIND you (your head stays in "
+                                 "front of the letters), like professional edits.")
+        v.addWidget(self.c_behind)
         self.c_vox = chk("Vox-style explainer graphics", "vox_graphics")
         self.c_vox.setToolTip("Paper-texture title cards, highlighted quotes, counting numbers, maps and timelines "
                               "(12 fps cut-out look). Runs on any computer.")
@@ -417,6 +425,7 @@ class CreateTab(QScrollArea):
             "doodle_outline": self.c_outline.isChecked(), "callout_doodles": self.c_cdood.isChecked(),
             "doodle_ai": self.c_ai.isChecked() and self.ai_ok, "rotation": self.rot.currentData(),
             "vox_graphics": self.c_vox.isChecked(), "vox_density": self.vdens.currentData(),
+            "text_behind": self.c_behind.isChecked(), "screen_mode": self.screen.currentData(),
             "language": self.lang.currentData(), "output_youtube": self.o_yt.isChecked(),
             "output_reel": self.o_reel.isChecked(), "reel_mode": self.reel_mode.currentData(),
             "review_before_render": self.c_review.isChecked(),
@@ -429,7 +438,8 @@ class CreateTab(QScrollArea):
         cb = {"remove_fillers": self.c_fill, "remove_silences": self.c_sil, "remove_retakes": self.c_ret,
               "smooth_zoom": self.c_push, "callouts": self.c_call, "progress_bar": self.c_bar, "sfx": self.c_sfx,
               "color_grade": self.c_grade, "music": self.c_music, "doodles": self.c_dood,
-              "doodle_outline": self.c_outline, "callout_doodles": self.c_cdood, "vox_graphics": self.c_vox}
+              "doodle_outline": self.c_outline, "callout_doodles": self.c_cdood, "vox_graphics": self.c_vox,
+              "text_behind": self.c_behind}
         for k, w in cb.items():
             if k in p:
                 w.setChecked(bool(p[k]))

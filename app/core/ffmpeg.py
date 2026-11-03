@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import subprocess
 import sys
@@ -321,6 +322,23 @@ def iter_frames(path: str | Path, fps: float = 4.0, width: int = 480, start: flo
         p.stdout.close()
         p.kill()
         p.wait()
+
+
+def grab_frames(path: str | Path, times: list[float], width: int = 480) -> Iterator[tuple[float, np.ndarray]]:
+    """A few frames at exact times via fast seeking (much quicker than decoding a long 4K clip)."""
+    info = probe(path)
+    w0, h0 = info["width"], info["height"]
+    h = int(round(h0 * width / max(1, w0) / 2) * 2)
+    for t in times:
+        args = [ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-ss", f"{max(0.0, t):.3f}", "-i", str(path),
+                "-frames:v", "1", "-vf", f"scale={width}:{h}", "-f", "rawvideo", "-pix_fmt", "bgr24", "-an", "pipe:1"]
+        try:
+            out = subprocess.run(args, capture_output=True, timeout=60,
+                                 creationflags=0x08000000 if os.name == "nt" else 0).stdout
+        except Exception:  # noqa: BLE001
+            continue
+        if len(out) >= width * h * 3:
+            yield t, np.frombuffer(out[:width * h * 3], np.uint8).reshape(h, width, 3)
 
 
 def extract_frame(path: str | Path, t: float, out: str | Path, rotate: int = 0) -> Path:

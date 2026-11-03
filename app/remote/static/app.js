@@ -267,11 +267,13 @@ function viewHome() {
 
 // ------------------------------------------------------------------ new edit
 const OPT_UI = [
-  ["Clean-up", [["remove_fillers", "Remove um / uh"], ["remove_silences", "Remove silences"], ["remove_retakes", "Remove retakes"]]],
+  ["Clean-up", [["remove_fillers", "Remove um / uh"], ["remove_silences", "Remove silences"], ["remove_retakes", "Remove retakes"],
+    ["screen_mode", "Screen recording", [["auto", "Auto-detect"], ["on", "Always"], ["off", "Never"]]]]],
   ["Look & feel", [["_captions", "Captions", [["bold_pop", "Bold pop"], ["clean", "Clean box"], ["minimal", "Minimal"], ["off", "Off"]]],
     ["caption_script", "Caption script", [["auto", "Auto"], ["hinglish", "Hinglish (Roman)"], ["native", "Native script"]]],
     ["zoom_style", "Zooms", [["jumpcut", "Punch-ins"], ["emphasis", "Emphasis only"], ["off", "Off"]]],
     ["smooth_zoom", "Smooth camera push-ins"], ["color_grade", "Colour grade"], ["callouts", "Pop-up text"],
+    ["text_behind", "Big titles behind you", null, "Your head stays in front of the letters, like pro edits"],
     ["progress_bar", "Progress bar"], ["sfx", "Sound effects"], ["music", "Background music"]]],
   ["Doodles ✨", [["doodles", "Animated doodles", null, "Hand-drawn icons that draw themselves next to you"],
     ["doodle_density", "How many", [["low", "A few"], ["medium", "Some"], ["high", "Lots"]]],
@@ -415,14 +417,15 @@ async function laptopBrowser() {
 const UA = navigator.userAgent;
 const APPLE_WEBKIT = /iP(hone|ad|od)/.test(UA) || (/Safari\//.test(UA) && !/Chrome|Chromium|CriOS|Android|Edg/.test(UA));
 
-function received(id, fast) {  // tiny GET: how many bytes of this upload the laptop has
+function received(id, fast) {  // tiny GET: which byte ranges of this upload the laptop has (null = no answer)
   const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), 4000);
   const headers = {}; if (fast) headers.Authorization = "Bearer " + fast.token;
   return fetch((fast ? fast.base : "") + `/api/uploads/${id}?_=${Date.now()}`, { headers, signal: ctl.signal,
     credentials: fast ? "omit" : "same-origin", cache: "no-store" })
-    .then(r => r.ok ? r.json() : null).then(j => (j && typeof j.received === "number") ? j.received : -1, () => -1)
+    .then(r => r.ok ? r.json() : null).then(j => (j && Array.isArray(j.ranges)) ? j.ranges : null, () => null)
     .finally(() => clearTimeout(timer));
 }
+const covers = (ranges, a, b) => !!ranges && ranges.some(([s, e]) => s <= a && e >= b);
 
 // one chunk: resolves with the laptop's byte count. Byte-level progress; confirmed by polling once sent;
 // aborted if nothing moves for `stallMs`.
@@ -444,8 +447,8 @@ function sendChunk(id, off, blob, fast, onBytes, stallMs) {
         quiet: (Date.now() - last) / 1000, status: x.status, ready: x.readyState, polls }; return err; };
     const poll = async () => {  // does the laptop already have the whole chunk?
       if (polling || settled) return; polling = true; polls++;
-      const n = await received(id, fast); polling = false;
-      if (!settled && n >= end) finish(true, { received: n, confirmed: true });
+      const rg = await received(id, fast); polling = false;
+      if (!settled && covers(rg, off, end)) finish(true, { ranges: rg, confirmed: true });
     };
     const dog = setInterval(() => {
       const now = Date.now();
@@ -506,7 +509,8 @@ const nap = ms => new Promise(r => {
   document.addEventListener("visibilitychange", vis);
 });
 
-// resumable chunked upload: live speed + time left, adaptive chunk size, stall watchdog, auto-resume
+// resumable, PARALLEL upload: several pieces at once (a slow or lost piece no longer holds everything up),
+// live speed + time left, stall watchdog, resumes exactly where it left off
 async function uploadFile(file, onprog) {
   const key = (file.name + file.size + file.lastModified).replace(/[^A-Za-z0-9]/g, "").slice(-60);
   let fast = S.net.fast, fastFails = 0;
@@ -518,55 +522,72 @@ async function uploadFile(file, onprog) {
     return api(m, u, b);
   };
   onprog(0, `Connecting to your laptop… ${route()}`);
+  if (!local() && S.net.same) toast("You're on the laptop's Wi-Fi, but this upload goes through the internet (slower). " +
+    "On Windows, open OnDaGo → Phone app → 'Allow through firewall', then reopen this page.", true, 9000);
   const init = await call("POST", "/api/uploads", { name: file.name, size: file.size, key });
-  const id = init.id; let off = init.received || 0;
+  const id = init.id;
   if (init.done) { onprog(1, "Already on the laptop"); return id; }
-  if (off) toast(`Resuming at ${mb(off)}`);
-  const MAXC = 16 * 1024 * 1024, MINC = 1024 * 1024;
-  let CH = local() ? 8 * 1024 * 1024 : 4 * 1024 * 1024;
-  let tries = 0, samples = [[Date.now(), off]];
-  const stats = cur => {
-    const now = Date.now(); samples.push([now, cur]); while (samples.length > 2 && now - samples[0][0] > 4000) samples.shift();
-    const [t0, b0] = samples[0]; const sp = (cur - b0) / Math.max(0.2, (now - t0) / 1000);
+  let ranges = init.ranges || (init.received ? [[0, init.received]] : []);
+  const have0 = ranges.reduce((a, [s, e]) => a + e - s, 0);
+  if (have0) toast(`Resuming: ${mb(have0)} already on the laptop`);
+  const CH = local() ? 8 * 1024 * 1024 : 4 * 1024 * 1024;
+  const N = local() ? 3 : 4;  // pieces in flight at once
+  const todo = [];
+  for (let o = 0; o < file.size; o += CH) if (!covers(ranges, o, Math.min(file.size, o + CH))) todo.push(o);
+  let done = file.size - todo.reduce((a, o) => a + Math.min(CH, file.size - o), 0);
+  const flying = new Map();
+  let samples = [[Date.now(), done]];
+  const stats = () => {
+    let cur = done; for (const v of flying.values()) cur += v;
+    cur = Math.min(cur, file.size);
+    const now = Date.now(); samples.push([now, cur]); while (samples.length > 2 && now - samples[0][0] > 5000) samples.shift();
+    const [t0, b0] = samples[0]; const sp = Math.max(0, (cur - b0) / Math.max(0.2, (now - t0) / 1000));
     const left = sp > 0 ? (file.size - cur) / sp : 0;
     const eta = left > 90 ? `${Math.round(left / 60)} min left` : left > 0 ? `${Math.max(1, Math.round(left))} s left` : "";
     onprog(cur / file.size, `${mb(cur)} of ${mb(file.size)} · ${(sp / 1e6).toFixed(1)} MB/s${eta ? " · " + eta : ""} · ${route()}`);
   };
-  const t_start = Date.now(), off_start = off;
-  report(`upload v3 start ${file.name} ${mb(file.size)} at ${mb(off)} via=${S.net.via} fast=${fast ? fast.base : "no"} page=${location.origin} ua=${UA.slice(0, 80)}`);
-  let okN = 0, okSecs = 0, confirmed = 0;
-  while (off < file.size) {
-    const end = Math.min(file.size, off + CH);
-    const t = Date.now();
-    try {
-      const r = await sendChunk(id, off, file.slice(off, end), fast, n => stats(off + n), local() ? 12000 : 25000);
-      if (r.confirmed) confirmed++;
-      off = r.received; tries = 0;
-      const secs = (Date.now() - t) / 1000;   // grow chunks on fast links, shrink on slow ones
-      okN++; okSecs += secs;
-      if (okN === 3 || okN % 10 === 0) {
-        report(`upload ok x${okN}: last ${okSecs.toFixed(1)}s for ${okN === 3 ? 3 : 10} chunks, chunk ${mb(CH)}, at ${mb(off)}, ` +
-               `replies via check ${confirmed}/${okN}, fast=${fast ? "yes" : "no"}`);
-        okSecs = 0;
+  stats();
+  const t_start = Date.now();
+  report(`upload v4 start ${file.name} ${mb(file.size)} have ${mb(done)} pieces ${todo.length}x${mb(CH)} ` +
+         `parallel ${N} via=${S.net.via} fast=${fast ? fast.base : "no"} same=${S.net.same} ua=${UA.slice(0, 70)}`);
+  let fails = 0, okN = 0, confirmed = 0, fatal = null;
+  const ticker = setInterval(stats, 700);
+  const worker = async () => {
+    while (todo.length && !fatal) {
+      const off = todo.shift(); const end = Math.min(file.size, off + CH);
+      flying.set(off, 0);
+      try {
+        const r = await sendChunk(id, off, file.slice(off, end), fast, n => flying.set(off, n), local() ? 15000 : 30000);
+        flying.delete(off); done += end - off; okN++; fails = 0;
+        if (r && r.confirmed) confirmed++;
+        if (okN === 3 || okN % 15 === 0) report(`upload ok x${okN} at ${mb(done)}, ${((done - have0) / 1e6 / Math.max(1, (Date.now() - t_start) / 1000)).toFixed(1)} MB/s avg, replies via check ${confirmed}/${okN}`);
+      } catch (e) {
+        flying.delete(off); todo.unshift(off);
+        report(`upload FAIL piece at ${mb(off)} fast=${fast ? "yes" : "no"} fails ${fails + 1} hidden=${document.hidden}: ${e.message} ${JSON.stringify(e.diag || {})}`);
+        if (e.status === 401) { fatal = e; render(); return; }
+        if (e.status && e.status !== 409 && e.status < 500) { fatal = e; return; }
+        if (fast && ++fastFails >= 3) { fast = null; toast("Wi-Fi direct path lost - continuing through the normal connection"); }
+        if (++fails > 15) { fatal = new ApiError(0, "Upload keeps failing. Check the connection and tap Start again - it resumes."); return; }
+        onprog(done / file.size, document.hidden ? "Paused - the phone stopped the upload in the background. Come back to this screen to continue."
+          : `Connection hiccup (${e.message}) - retrying…`);
+        await nap(fails <= 2 ? 300 : Math.min(5000, 400 * 2 ** (fails - 2)));
       }
-      if (secs < 2.5 && CH < MAXC) CH *= 2; else if (secs > 15 && CH > MINC) CH = Math.max(MINC, CH / 2);
-      stats(off);
-    } catch (e) {
-      report(`upload FAIL at ${mb(off)} chunk ${mb(CH)} fast=${fast ? "yes" : "no"} try ${tries + 1} hidden=${document.hidden}: ${e.message} ${JSON.stringify(e.diag || {})}`);
-      if (e.status === 401) { render(); throw e; }
-      if (e.status && e.status !== 409 && e.status < 500) throw e;
-      if (fast && ++fastFails >= 2) { fast = null; toast("Wi-Fi direct path lost - continuing through the normal connection"); }
-      if (++tries > 12) throw new ApiError(0, "Upload keeps failing. Check the connection and tap Start again - it resumes.");
-      if (tries >= 3) CH = Math.max(MINC, CH / 2);
-      onprog(off / file.size, document.hidden ? "Paused - the phone stopped the upload in the background. Come back to this screen to continue."
-        : `Connection hiccup (${e.message}) - retrying ${tries}/12…`);
-      await nap(tries <= 2 ? 300 : Math.min(5000, 500 * 2 ** (tries - 2)));
-      try { const again = await call("POST", "/api/uploads", { name: file.name, size: file.size, key }); off = again.received || off; } catch (e2) { /* next round */ }
-      samples = [[Date.now(), off]];
     }
-  }
+  };
+  try {
+    for (let round = 0; round < 3 && !fatal; round++) {
+      await Promise.all(Array.from({ length: N }, worker));
+      if (fatal) break;
+      const rg = await received(id, fast);  // double-check nothing is missing before finishing
+      if (!rg) break;
+      for (let o = 0; o < file.size; o += CH) if (!covers(rg, o, Math.min(file.size, o + CH))) todo.push(o);
+      if (!todo.length) break;
+      done = file.size - todo.reduce((a, o) => a + Math.min(CH, file.size - o), 0);
+    }
+  } finally { clearInterval(ticker); }
+  if (fatal) throw fatal;
   const secs = (Date.now() - t_start) / 1000;
-  report(`upload v3 done ${file.name}: ${mb(off - off_start)} in ${secs.toFixed(0)}s = ${((off - off_start) / 1e6 / Math.max(1, secs)).toFixed(1)} MB/s, replies via check ${confirmed}/${okN}`);
+  report(`upload v4 done ${file.name}: ${mb(file.size - have0)} in ${secs.toFixed(0)}s = ${((file.size - have0) / 1e6 / Math.max(1, secs)).toFixed(1)} MB/s, replies via check ${confirmed}/${okN}`);
   onprog(1, "Finishing…");
   await call("POST", `/api/uploads/${id}/complete`);
   return id;

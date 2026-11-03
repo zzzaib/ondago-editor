@@ -13,28 +13,33 @@ from dataclasses import dataclass
 @dataclass
 class Timeline:
     keeps: list[tuple[float, float]]  # source ranges, sorted, non-overlapping
+    speeds: list[float] | None = None  # playback speed per range (screen-recording fast-forwards), default 1
 
     def __post_init__(self):
+        self.speeds = list(self.speeds) if self.speeds else [1.0] * len(self.keeps)
         self.starts = [s for s, _ in self.keeps]
         self.offsets = []
         acc = 0.0
-        for s, e in self.keeps:
+        for (s, e), sp in zip(self.keeps, self.speeds):
             self.offsets.append(acc)
-            acc += e - s
+            acc += (e - s) / sp
         self.duration = acc
+
+    def _len(self, i: int) -> float:
+        return (self.keeps[i][1] - self.keeps[i][0]) / self.speeds[i]
 
     def to_edit(self, t: float, snap: str = "next") -> float | None:
         """Map a source time to edit time. If t is inside a cut: snap to next/prev keep or None."""
         i = bisect_right(self.starts, t) - 1
         if i >= 0 and self.keeps[i][0] <= t <= self.keeps[i][1]:
-            return self.offsets[i] + (t - self.keeps[i][0])
+            return self.offsets[i] + (t - self.keeps[i][0]) / self.speeds[i]
         if snap == "none":
             return None
         if snap == "next":
             j = i + 1
             return self.offsets[j] if j < len(self.keeps) else self.duration
         # prev
-        return self.offsets[i] + (self.keeps[i][1] - self.keeps[i][0]) if i >= 0 else 0.0
+        return self.offsets[i] + self._len(i) if i >= 0 else 0.0
 
     def range_to_edit(self, s: float, e: float) -> tuple[float, float] | None:
         a = self.to_edit(s, "next")
@@ -46,12 +51,44 @@ class Timeline:
     def to_source(self, t: float) -> float:
         i = bisect_right(self.offsets, t) - 1
         i = max(0, min(i, len(self.keeps) - 1))
-        return self.keeps[i][0] + (t - self.offsets[i])
+        return self.keeps[i][0] + (t - self.offsets[i]) * self.speeds[i]
+
+
+def segments(duration: float, cuts: list[dict], fps: float) -> list[tuple[float, float, float]]:
+    """Kept source ranges as (start, end, speed): normal keeps at 1x, screen-recording fast-forwards faster."""
+    keeps = compute_keeps(duration, cuts, fps)
+    fast = sorted((c["s"], c["e"], float(c.get("speed", 1.0))) for c in cuts
+                  if c.get("enabled", True) and c.get("kind") == "speed" and c.get("speed", 1) > 1.01)
+
+    def snap(x: float) -> float:
+        return round(round(x * fps) / fps, 6)
+
+    out: list[tuple[float, float, float]] = []
+    for s, e in keeps:
+        cur = s
+        for fs, fe, sp in fast:
+            fs, fe = max(snap(fs), s), min(snap(fe), e)
+            if fe - fs < 0.5 or fe <= cur:
+                continue
+            if fs > cur + 1e-6:
+                out.append((cur, fs, 1.0))
+            out.append((max(fs, cur), fe, sp))
+            cur = fe
+        if e > cur + 1e-6:
+            out.append((cur, e, 1.0))
+    return [x for x in out if x[1] - x[0] >= 1.0 / fps]
+
+
+def timeline_for(plan: dict) -> "Timeline":
+    info = plan["media"]
+    seg = segments(info["duration"], plan.get("cuts", []), info["fps"])
+    return Timeline([(a, b) for a, b, _ in seg], [sp for _, _, sp in seg])
 
 
 def compute_keeps(duration: float, cuts: list[dict], fps: float, min_keep: float = 0.12) -> list[tuple[float, float]]:
     """Subtract enabled cuts from [0, duration] and snap to the frame grid."""
-    spans = sorted((max(0.0, c["s"]), min(duration, c["e"])) for c in cuts if c.get("enabled", True) and c["e"] > c["s"])
+    spans = sorted((max(0.0, c["s"]), min(duration, c["e"])) for c in cuts
+                   if c.get("enabled", True) and c["e"] > c["s"] and c.get("kind") != "speed")
     merged: list[list[float]] = []
     for s, e in spans:
         if merged and s <= merged[-1][1] + 1e-3:

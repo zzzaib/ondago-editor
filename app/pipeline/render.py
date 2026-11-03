@@ -78,14 +78,26 @@ def even(x: float) -> int:
 
 
 # ----------------------------------------------------------------- pieces
-def build_pieces(keeps: list[tuple[float, float]], zoom_ranges: list[tuple[float, float]], style: str,
-                 fps: float, face_track: list[dict], smooth: bool = True) -> list[dict]:
-    """Split keeps at emphasis boundaries and assign a zoom factor + crop centre to every piece."""
+def edur(p: dict) -> float:
+    """Length of a piece in the EDIT (fast-forwarded pieces are shorter than their source span)."""
+    return (p["e"] - p["s"]) / p.get("speed", 1.0)
+
+
+def build_pieces(keeps: list, zoom_ranges: list[tuple[float, float]], style: str,
+                 fps: float, face_track: list[dict], smooth: bool = True, emph_zoom: float = 1.18) -> list[dict]:
+    """Split keeps at emphasis boundaries and assign a zoom factor + crop centre to every piece.
+    keeps: (start, end) or (start, end, speed); sped-up ranges stay whole, unzoomed pieces."""
     def snap(x):
         return round(round(x * fps) / fps, 6)
 
     pieces = []
-    for k, (s, e) in enumerate(keeps):
+    for k, kp in enumerate(keeps):
+        s, e = kp[0], kp[1]
+        sp = kp[2] if len(kp) > 2 else 1.0
+        if sp > 1.01:  # fast-forward: one piece; zoomed in when the action sits in one small area
+            ov = sum(max(0.0, min(e, ze) - max(s, zs)) for zs, ze in zoom_ranges)
+            pieces.append({"s": s, "e": e, "keep": k, "emph": ov >= 0.6 * (e - s), "speed": sp})
+            continue
         cuts = sorted({snap(x) for zs, ze in zoom_ranges for x in (zs, ze) if s + 0.4 < x < e - 0.4})
         bounds = [s] + cuts + [e]
         for i in range(len(bounds) - 1):
@@ -97,15 +109,15 @@ def build_pieces(keeps: list[tuple[float, float]], zoom_ranges: list[tuple[float
     for i, p in enumerate(pieces):
         z = 1.0
         if style in ("jumpcut", "emphasis") and p["emph"]:
-            z = 1.18
-        elif style == "jumpcut":
+            z = emph_zoom
+        elif style == "jumpcut" and p.get("speed", 1.0) <= 1.01:
             if i > 0 and pieces[i - 1]["keep"] != p["keep"]:
                 zoom_alt ^= 1
             z = 1.08 if zoom_alt else 1.0
         cx, cy = center_in(face_track, p["s"], p["e"]) if face_track else (0.5, 0.4)
-        p.update({"z": z, "cx": cx, "cy": min(0.6, cy + 0.08)})  # keep a bit of headroom
+        p.update({"z": z, "cx": cx, "cy": min(0.6, cy + 0.08) if emph_zoom < 1.25 else cy})  # headroom for faces
         # slow "camera push-in" on longer static shots keeps the frame alive
-        p["push"] = bool(smooth and style != "off" and (p["e"] - p["s"]) >= 2.2 and not p["emph"])
+        p["push"] = bool(smooth and style != "off" and edur(p) >= 2.2 and not p["emph"] and p.get("speed", 1) <= 1.01)
     return pieces
 
 
@@ -132,8 +144,10 @@ def render_base(src: Path, info: dict, pieces: list[dict], job_dir: Path, cfg: d
 
     def one(i_p):
         i, p = i_p
-        dur = p["e"] - p["s"]
-        nframes = max(1, int(round(dur * fps)))
+        sp = float(p.get("speed", 1.0))
+        dur = p["e"] - p["s"]            # source seconds
+        odur = dur / sp                  # seconds in the edit
+        nframes = max(1, int(round(odur * fps)))
         out = seg_dir / f"seg_{i:05d}.mkv"
         push = ""
         if p.get("push"):
@@ -143,14 +157,16 @@ def render_base(src: Path, info: dict, pieces: list[dict], job_dir: Path, cfg: d
         vf = f"{ffmpeg.hdr_to_sdr(info)}{ffmpeg.rot_prefix(info.get('rotate', 0))}" \
              f"{crop_expr(p, info['width'], info['height'])}" \
              f"scale={W}:{H}:force_original_aspect_ratio=increase," \
-             f"crop={W}:{H}{push},setsar=1,fps={fps:.6f}"
-        fade = min(0.01, dur / 4)
-        args = ["-ss", f"{p['s']:.4f}", "-i", str(src)]
-        if not info["has_audio"]:
+             f"crop={W}:{H}{push},setsar=1" + (f",setpts=(PTS-STARTPTS)/{sp:.4f}" if sp > 1.01 else "") + \
+             f",fps={fps:.6f}"
+        fade = min(0.01, odur / 4)
+        args = ["-ss", f"{p['s']:.4f}", "-t", f"{dur:.4f}", "-i", str(src)]
+        mute = sp > 1.01 or not info["has_audio"]  # a fast-forward is a silent stretch: no chipmunk noise
+        if mute:
             args += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
-        args += ["-t", f"{dur:.4f}", "-map", "0:v:0", "-map", "0:a:0" if info["has_audio"] else "1:a:0",
+        args += ["-t", f"{nframes / fps:.4f}", "-map", "0:v:0", "-map", "1:a:0" if mute else "0:a:0",
                  "-vf", vf, "-frames:v", str(nframes),
-                 "-af", f"aresample=48000,afade=t=in:d={fade:.4f},afade=t=out:st={max(0, dur - fade):.4f}:d={fade:.4f},"
+                 "-af", f"aresample=48000,afade=t=in:d={fade:.4f},afade=t=out:st={max(0, odur - fade):.4f}:d={fade:.4f},"
                         f"apad,atrim=0:{nframes / fps:.6f}",
                  *vcodec, "-g", str(int(fps * 2)), "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2", str(out)]
         ffmpeg.run(args)
@@ -179,8 +195,8 @@ def vertical_crop_cmds(pieces: list[dict], face_track: list[dict], base_w: int, 
     events: list[tuple[float, int]] = []
     last_x = None
     for p in pieces:
-        dur = p["e"] - p["s"]
-        a, b = t_edit, t_edit + dur
+        sp = p.get("speed", 1.0)
+        a, b = t_edit, t_edit + edur(p)
         t_edit = b
         if b < t0 or a > t1:
             continue
@@ -196,7 +212,7 @@ def vertical_crop_cmds(pieces: list[dict], face_track: list[dict], base_w: int, 
             x = int(min(max(0, fx_base * base_w - cw / 2), base_w - cw))
             if last_x is None or abs(x - last_x) > base_w * 0.03:
                 last_x = x
-            te = max(0.0, (a + (t - p["s"])) - t0)
+            te = max(0.0, (a + (t - p["s"]) / sp) - t0)
             lines.append(f"{te:.3f} crop@vc x {last_x};")
             events.append((te, last_x))
             t += 1.5
@@ -220,7 +236,7 @@ class OutMapper:
         a = 0.0
         for p in pieces:
             self.acc.append(a)
-            a += p["e"] - p["s"]
+            a += edur(p)
 
     def _src_face(self, ts: float):
         best = None
@@ -234,7 +250,7 @@ class OutMapper:
         te = t + self.t0
         i = max(0, min(len(self.pieces) - 1, sum(1 for a in self.acc if a <= te) - 1))
         p = self.pieces[i]
-        ts = p["s"] + (te - self.acc[i])
+        ts = p["s"] + (te - self.acc[i]) * p.get("speed", 1.0)
         f = self._src_face(ts)
         if not f:
             return None
@@ -276,13 +292,41 @@ class OutMapper:
         return float(np.median(arr[:, 0])), float(np.median(arr[:, 1])), float(np.median(arr[:, 2]))
 
 
+def ff_badge(folder: Path, speed: float, h: int) -> str:
+    """Rounded dark pill with two play triangles and the speed, e.g. '3x'."""
+    from PIL import Image, ImageDraw, ImageFont
+    from ..core.paths import FONTS
+    folder.mkdir(parents=True, exist_ok=True)
+    label = f"{speed:.0f}x" if speed >= 3 else f"{speed:.1f}x".replace(".0x", "x")
+    name = f"ff_{label}_{h}.png"
+    f = folder / name
+    if f.exists():
+        return name
+    try:
+        font = ImageFont.truetype(str(FONTS / "Poppins-Bold.ttf"), int(h * 0.55))
+    except Exception:  # noqa: BLE001
+        font = ImageFont.load_default()
+    tw = font.getlength(label)
+    w = int(h * 1.55 + tw + h * 0.45)
+    im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    d.rounded_rectangle([0, 0, w - 1, h - 1], radius=h // 2, fill=(15, 15, 22, 215))
+    ty, th = h * 0.27, h * 0.46
+    for k in range(2):
+        x = h * 0.38 + k * h * 0.36
+        d.polygon([(x, ty), (x + th * 0.8, ty + th / 2), (x, ty + th)], fill=(255, 214, 0, 255))
+    d.text((h * 1.3, h / 2), label, font=font, fill=(255, 255, 255, 255), anchor="lm")
+    im.save(f)
+    return name
+
+
 # ----------------------------------------------------------------- final
 def render_final(job_dir: Path, base: Path, base_info: dict, out: Path, *, vertical: bool, t0: float, t1: float,
                  broll: list[dict], ass_file: str | None, cfg: dict, pieces: list[dict], face_track: list[dict],
                  layout: str, on_progress: Progress, log: Callable[[str], None],
                  sfx_events: list[tuple[float, str, float]] | None = None, doodles: list[dict] | None = None,
                  outlines: list[dict] | None = None, src_info: dict | None = None,
-                 busy: list[dict] | None = None) -> Path:
+                 busy: list[dict] | None = None, behind: list[dict] | None = None) -> Path:
     bw, bh = base_info["width"], base_info["height"]
     fps = min(60.0, base_info["fps"])
     W, H = output_dims(base_info, vertical, cfg)
@@ -310,6 +354,27 @@ def render_final(job_dir: Path, base: Path, base_info: dict, out: Path, *, verti
         g.append(f"{src_v}[ol{oi}]overlay=0:0:eof_action=pass:enable='between(t,{s0:.3f},{e0:.3f})'[sv{oi}]")
         src_v = f"[sv{oi}]"
         idx += 1
+    # ---- titles behind the speaker (also in base-video space: you stay in front of the letters)
+    if behind:
+        from . import behind as behind_mod
+        for k, it in enumerate(behind):
+            s0, e0 = it["s"], min(it["e"], dur)
+            if e0 - s0 < 0.8:
+                continue
+            region = bw * 0.9 if (not vertical or bh > bw) else min(bw * 0.9, bh * 9 / 16)
+            rel = f"behind/{out.stem}_{it['id']:03d}"
+            try:
+                n = behind_mod.render_frames(base, it, bw, bh, region, job_dir, job_dir / rel, log)
+            except Exception as e:  # noqa: BLE001
+                log(f"Title behind you skipped: {e}")
+                n = 0
+            if not n:
+                continue
+            inputs += ["-framerate", str(behind_mod.FPS), "-i", f"{rel}/f_%04d.png"]
+            g.append(f"[{idx}:v]scale={bw}:{bh},format=rgba,setpts=PTS-STARTPTS+{s0:.3f}/TB[bt{k}]")
+            g.append(f"{src_v}[bt{k}]overlay=0:0:eof_action=pass:enable='between(t,{s0:.3f},{e0:.3f})'[sbt{k}]")
+            src_v = f"[sbt{k}]"
+            idx += 1
     crop = None
     # ---- split-screen moments (you glide aside, the B-roll / card fills a panel next to you)
     from . import layout as lay
@@ -576,6 +641,22 @@ def render_final(job_dir: Path, base: Path, base_info: dict, out: Path, *, verti
             log(f"Doodles: {placed} drawn for {out.name}")
             if sfx_events:
                 sfx_events.sort()
+    # ---- tutorials: a small "fast-forward" badge while a silent on-screen action plays faster
+    acc_t = 0.0
+    for pi, pc in enumerate(pieces):
+        d_ = edur(pc)
+        a_, b_ = acc_t - t0, acc_t + d_ - t0
+        acc_t += d_
+        if pc.get("speed", 1.0) <= 1.01 or b_ <= 0 or a_ >= dur or d_ < 0.6:
+            continue
+        a_, b_ = max(0.0, a_), min(dur, b_)
+        badge = ff_badge(mdir, pc["speed"], int(min(W, H) * 0.05))
+        inputs += ["-loop", "1", "-framerate", f"{fps:.3f}", "-t", f"{b_ - a_:.3f}", "-i", f"masks/{badge}"]
+        g.append(f"[{idx}:v]format=rgba,setpts=PTS-STARTPTS+{a_:.3f}/TB[ffb{pi}]")
+        g.append(f"{cur}[ffb{pi}]overlay=x=W-w-{int(W * 0.03)}:y={int(H * 0.04)}:eof_action=pass:"
+                 f"enable='between(t,{a_:.3f},{b_:.3f})'[ffo{pi}]")
+        cur = f"[ffo{pi}]"
+        idx += 1
     # ---- explainer look: a fine film grain over everything, so speaker shots and paper graphics feel like one piece
     if vox_mode:
         g.append(f"{cur}noise=alls=7:allf=t[vxg]")

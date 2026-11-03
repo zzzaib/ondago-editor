@@ -458,7 +458,8 @@ class ReviewTab(QWidget):
                 x = QTableWidgetItem(val)
                 x.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
                 self.cuts.setItem(r, col, x)
-        total = sum(c["e"] - c["s"] for c in cuts if c.get("enabled", True))
+        total = sum((c["e"] - c["s"]) * (1 - 1 / c["speed"] if c.get("kind") == "speed" else 1)
+                    for c in cuts if c.get("enabled", True))
         self.tabs.setTabText(1, f"Cuts ({len(cuts)}, -{total:.0f}s)")
         self.cuts.blockSignals(False)
 

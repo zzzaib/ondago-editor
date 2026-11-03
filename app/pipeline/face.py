@@ -6,7 +6,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from ..core.ffmpeg import iter_frames
+from ..core.ffmpeg import grab_frames, iter_frames
 from ..core.paths import MODELS
 
 YUNET = MODELS / "misc" / "face_detection_yunet_2023mar.onnx"
@@ -47,39 +47,63 @@ class FaceDetector:
 _ROT_CODES = {0: None, 90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_COUNTERCLOCKWISE}
 
 
+def _upright_score(det: "FaceDetector", img: np.ndarray) -> float:
+    """Confidence that the biggest face in img is UPRIGHT, judged by its landmarks (eyes above the mouth,
+    roughly level). The face detector alone also finds sideways and upside-down faces, so its score can't tell
+    which way is up - the landmark geometry can."""
+    h, w = img.shape[:2]
+    det.yunet.setInputSize((w, h))
+    _, faces = det.yunet.detect(img)
+    if faces is None:
+        return 0.0
+    best = 0.0
+    for f in faces:
+        x, y, fw, fh = f[:4]
+        if fh < min(h, w) * 0.10:  # a talking-head face, not a webcam corner or an icon
+            continue
+        rex, rey, lex, ley = f[4:8]
+        rmx, rmy, lmx, lmy = f[10:14]
+        ux, uy = (rex + lex) / 2 - (rmx + lmx) / 2, (rey + ley) / 2 - (rmy + lmy) / 2  # mouth -> eyes
+        n = float(np.hypot(ux, uy))
+        if n < fh * 0.15:
+            continue
+        up = -uy / n  # 1.0 = eyes straight above the mouth
+        if up >= 0.85:
+            best = max(best, float(f[-1]) * up)
+    return best
+
+
 def detect_rotation(video: str | Path, duration: float, samples: int = 12, log=None) -> int:
     """Find the extra clockwise rotation (0/90/180/270) that makes people upright.
 
-    Phones often save a landscape recording with a 'portrait' rotation flag (orientation lock,
-    or the phone was lying flat when recording started). The face detector is most confident on
-    upright faces, so each sampled frame is tried at all four rotations and votes for the most
-    confident one; we only rotate on a clear majority.
+    Phones sometimes save a landscape recording with a 'portrait' rotation flag (orientation lock,
+    or the phone was lying flat when recording started). Each sampled frame is tried at all four
+    rotations and votes for the one where a big face has its eyes level and above its mouth. We only
+    rotate on a clear, repeated majority. Clips without a big face (screen recordings, tutorials,
+    B-roll) are never rotated.
     """
     det = FaceDetector()
-    if det.yunet is None and det.haar is None:
-        return 0
+    if det.yunet is None:
+        return 0  # the fallback detector has no landmarks: too unreliable to rotate a video on
     votes = {0: 0, 90: 0, 180: 0, 270: 0}
     n = 0
-    fps = max(0.05, min(2.0, samples / max(1.0, duration)))
-    for _, fr in iter_frames(video, fps=fps, width=480):
+    times = [duration * (i + 0.5) / samples for i in range(samples)]
+    for _, fr in grab_frames(video, times, width=480):
         n += 1
-        scores = {}
-        for r, code in _ROT_CODES.items():
-            img = fr if code is None else cv2.rotate(fr, code)
-            faces = [f for f in det.detect(img) if f[3] >= img.shape[0] * 0.05]
-            scores[r] = max((f[4] for f in faces), default=0.0)
+        scores = {r: _upright_score(det, fr if code is None else cv2.rotate(fr, code)) for r, code in _ROT_CODES.items()}
         best = max(scores, key=scores.get)
         if scores[best] >= 0.6:
-            votes[best if (best == 0 or scores[best] - scores[0] >= 0.05) else 0] += 1
+            votes[best] += 1
         if n >= samples:
             break
     total = sum(votes.values())
-    best = max(votes, key=lambda r: (votes[r], r == 0))
+    best = max((90, 180, 270), key=lambda r: votes[r])
+    need = 0.8 if best == 180 else 0.6  # phones practically never record upside down: be extra sure
+    ok = votes[best] >= max(3, need * total) and total >= max(3, 0.4 * n)
     if log:
-        log(f"Orientation check: faces in {total}/{n} frames, votes for clockwise fix {votes}")
-    if best != 0 and votes[best] >= 2 and votes[best] >= 0.6 * total:
-        return best
-    return 0
+        log(f"Orientation check: {total}/{n} sampled frames show a clear face; votes {votes} -> "
+            f"{'rotate ' + str(best) + ' degrees' if ok else 'keep as recorded'}")
+    return best if ok else 0
 
 
 def track(video: str | Path, fps: float = 2.0, width: int = 480, rotate: int = 0) -> list[dict]:

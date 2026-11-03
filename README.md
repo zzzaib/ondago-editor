@@ -54,6 +54,12 @@ OnDaGo Editor is a one-click desktop app for **Windows and macOS** (Apple Silico
 - **AI custom doodles (RTX only):** FLUX draws a doodle of anything ("a VR headset"), then it's traced and animated the same way. Greyed out on GPUs that can't run it.
 - Change, add or switch off any doodle in **Review → Doodles** (or on your phone).
 
+### Titles behind you (new in v2.2)
+- Big bold titles appear **behind** you (your head stays in front of the letters), word by word with the key word highlighted, like professional edits. On in Talking head / Energetic Reel.
+
+### Tutorials & screen recordings (new in v2.2)
+- Screen recordings are detected automatically. Silent moments where you type, click or scroll are **fast-forwarded** (with a ▶▶ badge) instead of cut, zooms **follow the on-screen action**, and Reels follow the action so the text stays readable.
+
 ### Vox-style explainer graphics (new in v2.1)
 - Pick the **📰 Vox explainer** style (or tick *Vox-style explainer graphics* in Advanced options) and the editor AI adds explainer graphics where they help:
   - **title cards**: bold headlines that drop in word by word, with a yellow highlighter swipe;

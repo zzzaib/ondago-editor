@@ -177,6 +177,18 @@ def analyze(job: Job, cfg: dict, log: Log, progress: Prog) -> None:
     trk = face.track(src, fps=2.0, rotate=info.get("rotate", 0))
     job.save_json("faces.json", trk)
     plan["face_ratio"] = face.face_ratio(trk)
+    # ---- screen recordings / tutorials: keep on-screen actions, zoom to what changes
+    from . import screen
+    plan["screen"] = screen.is_screen_recording(info, trk) if cfg.get("screen_mode", "auto") == "auto" else \
+        cfg.get("screen_mode") == "on"
+    if plan["screen"]:
+        p(0.5, "Screen recording: finding on-screen actions")
+        log("Looks like a screen recording / tutorial: silent on-screen actions are sped up instead of cut, "
+            "zooms follow the action")
+        act = screen.activity(src, rotate=info.get("rotate", 0), log=log)
+        job.save_json("activity.json", act)
+        plan["cuts"] = cuts.finalize(screen.speed_silences(plan["cuts"], act, cfg, log))
+        plan["outlines"] = []  # no person to outline
 
     # ---- b-roll
     p = st.sub("broll")
@@ -221,13 +233,27 @@ def analyze(job: Job, cfg: dict, log: Log, progress: Prog) -> None:
 
 # ==================================================================== RENDER
 def _timeline(job: Job, cfg: dict):
+    from .timeline import segments
     info = job.plan["media"]
     keeps = compute_keeps(info["duration"], job.plan.get("cuts", []), info["fps"])
+    segs = segments(info["duration"], job.plan.get("cuts", []), info["fps"])
     trk = job.load_json("faces.json", [])
     zooms = [(z["s"], z["e"]) for z in job.plan.get("zooms", [])]
-    pieces = render.build_pieces(keeps, zooms, cfg.get("zoom_style", "jumpcut"), min(60.0, info["fps"]), trk,
-                                 smooth=cfg.get("smooth_zoom", True))
-    tl = Timeline([(pc["s"], pc["e"]) for pc in pieces])
+    if job.plan.get("screen"):  # tutorials: zoom in on the on-screen action, no slow push (it crops the UI)
+        from .screen import action_track, action_zooms
+        raw_act = job.load_json("activity.json", [])
+        act = action_track(raw_act)
+        style = cfg.get("zoom_style", "emphasis")
+        if style != "off":
+            style = "emphasis"  # no alternating jump-zooms on a screen
+            zooms = sorted(zooms + action_zooms(raw_act))
+        pieces = render.build_pieces(segs, zooms, style, min(60.0, info["fps"]), act,
+                                     smooth=False, emph_zoom=float(cfg.get("screen_zoom", 1.45)))
+        trk = act  # the Reel crop and doodles follow the on-screen action instead of a face
+    else:
+        pieces = render.build_pieces(segs, zooms, cfg.get("zoom_style", "jumpcut"), min(60.0, info["fps"]), trk,
+                                     smooth=cfg.get("smooth_zoom", True))
+    tl = Timeline([(pc["s"], pc["e"]) for pc in pieces], [pc.get("speed", 1.0) for pc in pieces])
     return keeps, pieces, tl, trk
 
 
@@ -278,7 +304,25 @@ def render_all(job: Job, cfg: dict, log: Log, progress: Prog) -> dict:
         if r:
             callouts.append({"s": r[0], "e": r[0] + 1.6, "text": c["text"]})
     kw = plan.get("keywords", []) if cfg.get("caption_keywords", True) else []
+    # some pop-up texts become big titles BEHIND the speaker (pro-edit look); the rest stay pop-ups
+    behind_all: list[dict] = []
+    if cfg.get("text_behind", True) and cfg.get("callouts", True) and not plan.get("screen") and callouts:
+        from .behind import pick_moments
+        busy_b = [(b["t0"], b["t1"]) for b in broll]
+        behind_all = pick_moments(callouts, busy_b, tl.duration,
+                                  every={"low": 30.0, "medium": 16.0, "high": 10.0}.get(cfg.get("text_behind_density",
+                                                                                                "medium"), 16.0))
+        for i, b in enumerate(behind_all):
+            b["id"], b["t_base"] = i, b["s"]
+        chosen = {id(b["src"]) for b in behind_all}
+        callouts = [c for c in callouts if id(c) not in chosen]
+        for b in behind_all:
+            b.pop("src", None)
+        if behind_all:
+            log(f"Titles behind you: {len(behind_all)}")
     dd_all, ol_all = _visual_extras(job, cfg, tl, broll, base, base_info, log)
+    if behind_all:  # no doodle on top of a big title
+        dd_all = [d for d in dd_all if all(d["e"] <= b["s"] - 0.2 or d["s"] >= b["e"] + 0.2 for b in behind_all)]
     outputs = {}
 
     if want_yt:
@@ -296,7 +340,9 @@ def render_all(job: Job, cfg: dict, log: Log, progress: Prog) -> dict:
             job.dir, base, base_info, job.path("youtube.mp4"), vertical=False, t0=0, t1=tl.duration,
             broll=by, ass_file=ass.name, cfg=cfg, pieces=pieces, face_track=trk, layout="",
             on_progress=st.sub("youtube"), log=log,
-            sfx_events=sound_events(by, callouts, pieces, 0.0, tl.duration, False, bool(cfg.get("cta_youtube"))),
+            sfx_events=sorted(sound_events(by, callouts, pieces, 0.0, tl.duration, False, bool(cfg.get("cta_youtube")))
+                              + [(b["s"] + 0.05, "whoosh", -5.0) for b in behind_all]),
+            behind=_window(behind_all, 0.0, tl.duration),
             doodles=_window(dd_all, 0.0, tl.duration) + _callout_doodles(callouts, cfg) +
             _split_doodles(by, 0.0, tl.duration, geo, lm, W, H, cfg),
             outlines=_window(ol_all, 0.0, tl.duration), src_info=info, busy=callouts))
@@ -329,14 +375,17 @@ def render_all(job: Job, cfg: dict, log: Log, progress: Prog) -> dict:
                                                 cta=cfg.get("cta_reel", ""), duration=t1 - t0,
                                                 cards=_cards(by, t0, t1, geo, lm, 1080, 1920)))
         layout = cfg.get("vertical_layout", "face")
-        if layout == "face" and plan.get("face_ratio", 0) < 0.3:
+        if layout == "face" and plan.get("face_ratio", 0) < 0.3 and not plan.get("screen"):
             layout = "blur"  # screen recordings / no face: letterbox on blurred background
         outputs["reel"] = str(render.render_final(
             job.dir, base, base_info, job.path("reel.mp4"), vertical=True, t0=t0, t1=t1, broll=by,
             ass_file=ass.name, cfg=cfg, pieces=pieces, face_track=trk, layout=layout,
             on_progress=st.sub("reel"), log=log,
-            sfx_events=sound_events(by, [c for c in callouts if c["s"] >= hook_end], pieces, t0, t1, bool(hook),
-                                    bool(cfg.get("cta_reel"))),
+            sfx_events=sorted(sound_events(by, [c for c in callouts if c["s"] >= hook_end], pieces, t0, t1, bool(hook),
+                                           bool(cfg.get("cta_reel")))
+                              + [(b["s"] - t0 + 0.05, "whoosh", -5.0) for b in behind_all
+                                 if hook_end <= b["s"] and b["e"] <= t1]),
+            behind=[b for b in _window(behind_all, t0, t1) if b["s"] >= hook_end - t0],
             doodles=[d for d in _window(dd_all, t0, t1) if d["s"] >= (2.9 if hook else 0.0)] + _callout_doodles(rc, cfg) +
             _split_doodles(by, t0, t1, geo, lm, 1080, 1920, cfg),
             outlines=_window(ol_all, t0, t1), src_info=info, busy=rc))
@@ -484,7 +533,7 @@ def sound_events(broll: list[dict], callouts: list[dict], pieces: list[dict], t0
     for p in pieces:  # punch-in zoom cuts get a soft whoosh
         if p.get("emph") and t0 + 0.5 <= acc < t1:
             ev.append((acc - t0, "whoosh", -7.0))
-        acc += p["e"] - p["s"]
+        acc += render.edur(p)
     if hook:
         ev.append((0.04, "pop", 0.0))
     dur = t1 - t0

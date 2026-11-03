@@ -1,3 +1,32 @@
+## OnDaGo Editor v2.2.0: titles behind you, real tutorial editing, faster phone uploads
+
+**🎬 Big titles behind you**
+- Some pop-up texts now become big bold titles that appear BEHIND you: your head and shoulders stay in front
+  of the letters, like professional edits. Words pop in one by one, the key word is yellow, with a whoosh.
+- Placed automatically so you only cover a small part of the letters; works in the YouTube and the Reel version.
+- On in "Talking head" and "Energetic Reel"; switch it in Advanced options ("Big titles behind you").
+
+**💻 Tutorials and screen recordings**
+- Screen recordings are detected automatically (a small webcam in the corner doesn't count as a talking head).
+- Silent parts where something happens on screen (typing, clicking, scrolling) are fast-forwarded 2-8x with a
+  small "▶▶ 3x" badge, instead of being cut, so viewers never miss a step. Silent parts where nothing happens
+  are still cut.
+- Zooms follow the on-screen action (auto zoom where you type or click), no more zooming on the middle of the
+  screen or on a tiny webcam face; no slow push-in that crops the UI.
+- Reels of screen recordings follow the action so the text is readable on a phone.
+- New "Screen recording: Auto / Always / Never" option.
+
+**🔄 Orientation fix**
+- Videos were sometimes turned upside down or sideways. The check now looks at where the eyes are relative to the
+  mouth (instead of how confident the face detector is) and only turns a video on a clear majority of big faces.
+  Screen recordings are never turned. It is also much faster on long 4K clips.
+
+**📱 Faster, steadier phone uploads**
+- The phone now sends 3-4 pieces at once, in any order, so one slow or lost piece no longer holds up the upload.
+  Resuming continues exactly where it stopped. Progress and speed show from the first second.
+- A warning appears when the phone is on the laptop's Wi-Fi but the upload goes through the internet
+  (on Windows usually the firewall: Phone app tab -> Allow through firewall).
+
 ## OnDaGo Editor v2.1.1: fast, reliable phone uploads on iPhone
 
 - Uploads no longer wait for the laptop's reply to each piece. iPhone Safari on a direct Wi-Fi link often never
